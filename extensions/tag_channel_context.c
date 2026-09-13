@@ -54,6 +54,9 @@ tag_ccon_allow(void *data_)
 {
 	hook_data_message_tag *data = data_;
 
+	if (strcmp(data->key, "+channel-context") != 0)
+		return;
+
 	if (MyClient(data->source))
 	{
 		if (NotClientCapable(data->source, CLICAP_MESSAGE_TAGS))
