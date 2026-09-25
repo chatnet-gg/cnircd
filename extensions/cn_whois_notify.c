@@ -20,12 +20,11 @@
  * immediately if a non-oper sets it, same enforcement shape as core's
  * own IsOper() gate on UMODE_ADMIN in ircd/s_user.c.
  *
- * Service/bot nicks excluded (2026-08-13, abcX): claude-bot polls
- * WHOIS on abcX's nick every 90s to detect away status (see
- * claude-bot/bot.py's _check_abcx_away), which floods +W with noise
- * from a known bot rather than the "someone is looking you up"
- * signal +W exists for. Mirrors bot.py's own NON_PERSON_NICKS list so
- * the same set of service/bot nicks is silent on both sides.
+ * Service/bot nicks excluded (2026-08-13, abcX): a network helper bot
+ * polls WHOIS on abcX's nick every 90s to detect away status, which
+ * floods +W with noise from a known bot rather than the "someone is
+ * looking you up" signal +W exists for. The list below is the set of
+ * service/bot nicks that stay silent.
  *
  * Staff-on-staff excluded too (2026-08-18, abcX: "vedo cncheck che mi
  * fa i whois" -> generalized to "staff cloak chatnet/staff* non deve
@@ -35,8 +34,7 @@
  * real purpose is flagging a stranger/rando looking you up, not routine
  * staff-on-staff or bot-on-staff traffic. Checked by real staff cloak
  * (chatnet/staff/*, applied on IDENTIFY/SASL -- same field
- * cn_ip_cloak.c itself writes, same prefix claude-bot/bot.py's own
- * STAFF_HOST_PREFIX checks) on BOTH sides: source WHOISing a staffer
+ * cn_ip_cloak.c itself writes) on BOTH sides: source WHOISing a staffer
  * still notifies unless the source is also staff-cloaked (or a listed
  * service nick, existing check above).
  */
@@ -54,7 +52,7 @@
 static const char cn_whois_notify_desc[] =
 	"Adds user mode +W: notifies you when someone /WHOIS's you.";
 
-/* Kept in sync with claude-bot/bot.py's NON_PERSON_NICKS */
+/* Service/bot nicks that never trigger +W notifications */
 static const char *cn_whois_notify_service_nicks[] = {
 	"NickServ", "ChanServ", "K9", "OS", "ChatWorld", "CW", "Global",
 	"MemoServ", "InfoServ", "SaslServ", "GroupServ", "HostServ",
@@ -64,8 +62,7 @@ static const char *cn_whois_notify_service_nicks[] = {
 	NULL
 };
 
-/* Real staff cloak prefix -- see claude-bot/bot.py's own
- * STAFF_HOST_PREFIX for the other side of this same convention. */
+/* Real staff cloak prefix, as written by cn_ip_cloak.c */
 static const char cn_whois_notify_staff_host_prefix[] = "chatnet/staff/";
 
 static void whois_notify_process(void *);
