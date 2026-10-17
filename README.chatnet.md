@@ -43,6 +43,26 @@ just the ircd itself.
    even if your network has no bots under that vhost pattern -- it's
    simply never a match.
 
+5. **Services-set hosts may carry any nick character** -- ChatNet-specific.
+   `clean_host()` in `m_chghost.c`, `m_signon.c` and `m_nick.c` only
+   accepted hostname characters, so a services cloak like
+   `user/Gabiy[a]n` got mangled. They now accept hostname *or* nick
+   characters (`IsCloakHostChar()`); client-supplied hostnames are still
+   checked with `IsHostChar()`. If you take only some of these three
+   files, take `m_nick.c` too, or the hub will KILL such users on every
+   relink burst.
+
+## Extensions bundled in `extensions/`
+
+Not part of upstream, loaded by the bundled config:
+
+- `cap_sts.c` -- IRCv3 STS, advertises the real TLS port.
+- `cn_ip_cloak.c` -- the `CN-` anonymous IP/host cloak (`+x`).
+- `cn_whois_notify.c` -- notifies on WHOIS (`+W`), staff and bots excluded.
+
+`extb_account`, `sno_globaloper`, `invite_notify` and `chm_operonly`
+are stock Solanum extensions that every ChatNet server loads.
+
 Each patch is its own commit with a full explanation in the commit
 message -- `git log` for the details, this file is just the index.
 
