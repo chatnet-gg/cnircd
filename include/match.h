@@ -120,6 +120,9 @@ extern unsigned int CharAttrs[];
 #define FCHAN_C 0x20000 /* a 'fake' channel char */
 
 #define IsHostChar(c)   (CharAttrs[(unsigned char)(c)] & HOST_C)
+/* ChatNet: a services-set host (CHGHOST/SVSLOGIN cloak) may also carry any nick
+ * character, so user/<account> keeps account names like Gabiy[a]n intact. */
+#define IsCloakHostChar(c)	(CharAttrs[(unsigned char)(c)] & (HOST_C | NICK_C))
 #define IsUserChar(c)   (CharAttrs[(unsigned char)(c)] & USER_C)
 #define IsChanPrefix(c) (CharAttrs[(unsigned char)(c)] & CHANPFX_C)
 #define IsChanChar(c)   (CharAttrs[(unsigned char)(c)] & CHAN_C)

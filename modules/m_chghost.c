@@ -67,7 +67,7 @@ clean_host(const char *host)
 	{
 		len++;
 
-		if(!IsHostChar(*host))
+		if(!IsCloakHostChar(*host))
 			return false;
 		if(*host == '/')
 			last_slash = host;
