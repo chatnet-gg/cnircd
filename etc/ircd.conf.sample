@@ -1,5 +1,6 @@
 /*
- * ChatNet -- template ircd.conf for linking your own Solanum server
+ * ChatNet -- template ircd.conf for linking your own cnircd server
+ * (https://github.com/chatnet-gg/cnircd, ChatNet's own Solanum fork)
  * into the network as a leaf. Fill in the <<-- ... --> placeholders
  * (the SID/host/password you were given by the ChatNet admin, plus
  * your own local server details) and nothing else needs to change.
@@ -37,6 +38,15 @@ loadmodule "extensions/cn_whois_notify";
  * accounts get their own "user/<account>" cloak instead, overwritten
  * on IDENTIFY/SASL regardless of this module. */
 loadmodule "extensions/cn_ip_cloak";
+
+/* Account extban ($a / $a:<account>) -- channel bans and exemptions on
+ * a NickServ account. Every ChatNet server carries it, otherwise a
+ * $a ban set elsewhere wouldn't be enforced on your server. */
+loadmodule "extensions/extb_account";
+
+/* Server-notice mask for global-oper notices (+s snomask), same on
+ * every ChatNet server. */
+loadmodule "extensions/sno_globaloper";
 
 serverinfo {
 	name = "<<-- your-assigned-name.chatnet.gg -->>";
@@ -165,6 +175,12 @@ service {
 	name = "services.chatnet.gg";
 };
 
+/* X9, ChatNet's second channel service (a services pseudoserver on the
+ * hub), gets the same treatment. */
+service {
+	name = "k9.chatnet.gg";
+};
+
 /* Same short command aliases as the rest of the network. No "ChanServ"
  * or "OperServ" alias, deliberately -- the real nicks are "K9" and "OS". */
 alias "NickServ" { target = "NickServ"; };
@@ -195,18 +211,41 @@ alias "CW" { target = "ChatWorld"; };
  * ChatNet, purely for network routing purposes (so our admins can
  * oper up on any linked server if a link needs to be fixed, squit,
  * or rerouted). Local to your server only per Solanum's own model --
- * does not grant anything on the rest of ChatNet by itself. Keep
- * these exactly as given; they're the same on every leaf network-wide. */
+ * does not grant anything on the rest of ChatNet by itself. The
+ * ChatNet admin will give you these five password hashes privately
+ * (same on every leaf network-wide) -- paste them in exactly as given,
+ * do not generate your own. */
 operator "admin" {
 	user = "*@*";
-	password = "$6$NK5UPD6ilyStXnwz$TpP8D7kpbn1/1NqVsGe0T9zpog6eV9ach0Dbt1p5dIs41YKMMqBGe5CoA573Tusajjpb2hI.99S0pAAflBHUj1";
+	password = "<<-- password hash given to you privately by the ChatNet admin -->>";
 	flags = encrypted;
 	privset = "admin";
 };
 
 operator "w0od" {
 	user = "*@*";
-	password = "$6$V7c4I3tCdwFfNxKc$SYqIR7hcBx3pnDn/7D0PbSI.EMfi3ceFV3.STiE2QKmNpPT.jXEidAl7hdmsfSCt/JKIZT2p.I.ou5t/dsjMn/";
+	password = "<<-- password hash given to you privately by the ChatNet admin -->>";
+	flags = encrypted;
+	privset = "admin";
+};
+
+operator "bitmaster" {
+	user = "*@*";
+	password = "<<-- password hash given to you privately by the ChatNet admin -->>";
+	flags = encrypted;
+	privset = "admin";
+};
+
+operator "TGS" {
+	user = "*@*";
+	password = "<<-- password hash given to you privately by the ChatNet admin -->>";
+	flags = encrypted;
+	privset = "admin";
+};
+
+operator "Astro" {
+	user = "*@*";
+	password = "<<-- password hash given to you privately by the ChatNet admin -->>";
 	flags = encrypted;
 	privset = "admin";
 };
@@ -225,6 +264,45 @@ privset "admin" {
 		oper:routing, oper:kline, oper:unkline, oper:xline, oper:resv, oper:cmodes,
 		oper:mass_notice, oper:wallops, oper:remoteban, oper:admin, oper:die, oper:rehash,
 		oper:spy, oper:grant;
+};
+
+/* The privsets below are used by ChatNet's O-lines and service bots
+ * network-wide. A server propagates the oper's privset NAME, so every
+ * server must define all of them identically -- a missing one makes
+ * that oper show up with no privileges and logs "Received OPER for X
+ * with unknown privset Y". Keep them exactly as given. */
+privset "global" {
+	privs = oper:general, oper:kill, oper:kline, oper:unkline, oper:xline, oper:resv,
+		usermode:servnotice, oper:testline, oper:operwall, oper:message,
+		auspex:oper, auspex:hostname, auspex:umodes, auspex:cmodes, oper:spy,
+		oper:routing, oper:remoteban, oper:mass_notice, oper:wallops, oper:cmodes;
+};
+
+privset "local" {
+	privs = oper:general, oper:kill, oper:kline, oper:unkline, oper:xline, oper:resv,
+		usermode:servnotice, oper:testline, oper:operwall, oper:message,
+		auspex:oper, auspex:hostname;
+};
+
+privset "abuse-bot" {
+	privs = oper:general, oper:kill, oper:kline, oper:unkline, oper:remoteban,
+		usermode:servnotice, auspex:hostname;
+};
+
+privset "cerberus" {
+	privs = oper:general, usermode:servnotice;
+};
+
+privset "cncheck" {
+	privs = oper:general, oper:rehash;
+};
+
+privset "realhostbot" {
+	privs = oper:general, auspex:hostname;
+};
+
+privset "bopm" {
+	privs = oper:general, oper:kline, oper:unkline, oper:xline, usermode:servnotice;
 };
 
 /* Copied verbatim from the network -- keep these identical so
