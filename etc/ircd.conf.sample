@@ -182,14 +182,17 @@ service {
 };
 
 /* Same short command aliases as the rest of the network. No "ChanServ"
- * or "OperServ" alias, deliberately -- the real nicks are "K9" and "OS". */
-alias "NickServ" { target = "NickServ"; };
+ * or "OperServ" alias, deliberately -- the real nicks are "K9" and "OS".
+ * The nick service's real nick is "DogTag"; "NickServ" and "NS" stay as
+ * aliases so /NickServ and /NS keep working for everyone. */
+alias "NickServ" { target = "DogTag"; };
 alias "MemoServ" { target = "MemoServ"; };
 alias "GroupServ" { target = "GroupServ"; };
 alias "HostServ" { target = "HostServ"; };
 alias "BotServ" { target = "BotServ"; };
 alias "InfoServ" { target = "InfoServ"; };
-alias "NS" { target = "NickServ"; };
+alias "NS" { target = "DogTag"; };
+alias "DogTag" { target = "DogTag"; };
 alias "CS" { target = "K9"; };
 alias "K9" { target = "K9"; };
 alias "OS" { target = "OS"; };
@@ -362,7 +365,7 @@ general {
 	dline_with_reason = yes;
 	kline_with_reason = yes;
 	kline_reason = "K-Lined";
-	identify_service = "NickServ@services.chatnet.gg";
+	identify_service = "DogTag@services.chatnet.gg";
 	identify_command = "IDENTIFY";
 	non_redundant_klines = yes;
 	warn_no_nline = yes;
