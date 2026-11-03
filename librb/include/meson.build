@@ -6,5 +6,5 @@ librb_serno_h = custom_target('librb_serno.h',
   input: serno_h,
   output: 'serno_librb.h',
   command: ['sh', '-c', 'cp $0 $1', '@INPUT@', '@OUTPUT@'],
-  depends: serno_h
+  depends: [serno_h, datecode_h]
 )
