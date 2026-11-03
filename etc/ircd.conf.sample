@@ -8,7 +8,7 @@
  * See https://chatnet.gg/routing.html for the full step-by-step guide.
  *
  * Based on Solanum's own example config, adapted for ChatNet and
- * maintained by sh (abcx@chatnet.gg), and tested on live leaves by
+ * maintained by abcX (abcx@chatnet.gg), and tested on live leaves by
  * w0od, TGS, Astro and Slogan. Every change to this template is checked
  * against the configs the production leaves run before it ships; see
  * README.chatnet.md for the patches and extensions this build carries.
