@@ -7,9 +7,11 @@ you're linking a leaf into ChatNet, build this instead of vanilla
 Solanum -- it saves you from re-discovering the same build/runtime
 issues we already hit.
 
-Get the leaf config template and your SID/link password from
-[chatnet.gg/routing](https://chatnet.gg/routing.html) -- this repo is
-just the ircd itself.
+Linking is by application: staff review every request
+([chatnet.gg/routing](https://chatnet.gg/routing.html)) and give you
+your SID and link password once it's approved. This repo is just the
+ircd and a leaf config template (`etc/ircd.conf.sample`) -- having the
+code doesn't link you to anything, the hub has to accept you first.
 
 ## Patches on top of upstream, in commit order
 
@@ -51,6 +53,36 @@ just the ircd itself.
    checked with `IsHostChar()`. If you take only some of these three
    files, take `m_nick.c` too, or the hub will KILL such users on every
    relink burst.
+
+## Also in this tree
+
+- **`CHANTS`** (`modules/m_chants.c`) -- admin-only command that sets a
+  channel's TS6 timestamp directly and relays it to every linked
+  server. TS6 only ever lets a channel's TS go down; this is the escape
+  hatch for when something has lowered it by mistake.
+- **Build fixes** -- a FreeBSD build fix (portable test-runtime
+  extraction, ltdl lookup under `/usr/local`), and `datecode.h` is now a
+  declared dependency of `librb` and `libircd`, so a parallel build on a
+  fresh tree no longer fails with `datecode.h: No such file or
+  directory`.
+
+## The sample config
+
+`etc/ircd.conf.sample` is the leaf template. Fill in the `<<-- ... -->>`
+placeholders (server name, SID, link password, hub address, the routing
+O-line hashes you're given) and it loads as is. It already carries the
+things that have to match the rest of the network:
+
+- **All eight privsets** -- `admin`, `global`, `local`, `abuse-bot`,
+  `cerberus`, `cncheck`, `realhostbot`, `bopm`. A server propagates an
+  oper's privset *name*, so every server has to define all of them the
+  same way; a missing one shows up as an oper with no privileges and
+  "unknown privset" in the log.
+- **Service aliases** -- the nick service is `DogTag`; `/NickServ` and
+  `/NS` are aliases for it, and `identify_service` points at it.
+- The `service{}` blocks for the network's services, the `+x` cloak
+  and STS modules, and the same channel/general settings as the rest
+  of the network.
 
 ## Extensions bundled in `extensions/`
 
