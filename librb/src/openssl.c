@@ -470,7 +470,20 @@ rb_setup_ssl_server(const char *const certfile, const char *keyfile,
 
 
 	SSL_CTX_set_session_cache_mode(ssl_ctx_new, SSL_SESS_CACHE_OFF);
-	SSL_CTX_set_verify(ssl_ctx_new, SSL_VERIFY_PEER | SSL_VERIFY_CLIENT_ONCE, verify_accept_all_cb);
+	/* CHATNET PATCH (2026-09-12): SSL_VERIFY_PEER|SSL_VERIFY_CLIENT_ONCE
+	 * (optional client cert request, for CertFP) triggers a reproducible
+	 * "access denied" TLS alert against OpenSSL 3.5.7 specifically (not
+	 * seen on other nodes running OpenSSL 3.0.x) whenever the connecting
+	 * client presents no certificate -- which is every non-CertFP client,
+	 * i.e. all of them on this node. Hub has zero CertFP/CHALLENGE
+	 * operator{} blocks (verified against etc-live/ircd.conf before this
+	 * patch), so dropping the client-cert request here costs nothing
+	 * functionally. Root cause not fully pinned (OpenSSL 3.5.x behavior
+	 * change in this exact verify-mode combination), same class as the
+	 * still-unresolved SaoPaulo loopback TLS quirk -- this works around
+	 * it rather than fixing OpenSSL itself. Revisit if this node ever
+	 * needs a CertFP oper. */
+	SSL_CTX_set_verify(ssl_ctx_new, SSL_VERIFY_NONE, NULL);
 
 	#ifdef SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS
 	(void) SSL_CTX_clear_options(ssl_ctx_new, SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS);

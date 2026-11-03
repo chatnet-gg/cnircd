@@ -1,22 +1,43 @@
 project('cnircd', 'c',
   version: '1.0',
-  default_options: ['c_std=c99', 'warning_level=0'],
+  # b_lundef=false: our modules (ircd/modules/*) are shared libs with
+  # symbols only resolved once dlopen()'d into the running ircd, not at
+  # link time -- meson's default (b_lundef=true) requires every symbol
+  # defined at link time, which FreeBSD's linker enforces strictly
+  # enough to fail the build outright (bitmaster, 2026-10-21, needed
+  # `-Db_lundef=false` by hand). Harmless on Linux, where this was
+  # already effectively allowed.
+  default_options: ['c_std=c99', 'warning_level=0', 'b_lundef=false'],
   meson_version: '>=0.62.0', # dependency('dl')
   license: 'GPLv2'
 )
 
 cc = meson.get_compiler('c')
 
+# FreeBSD base's compiler/linker don't search /usr/local by default --
+# that's where `pkg` installs port libraries (e.g. libltdl). Passing
+# -I/-L as project arguments doesn't reach cc.find_library()'s own
+# internal link probe, so it still fails to find an installed package
+# unless the search dir is given directly via find_library()'s `dirs:`
+# (bitmaster, 2026-10-21 -- needed `CPPFLAGS=-I/usr/local/include
+# LDFLAGS=-L/usr/local/lib` by hand). Empty (default search) on Linux.
+extra_lib_dirs = []
+if host_machine.system() == 'freebsd'
+  add_project_arguments('-I/usr/local/include', language: 'c')
+  add_project_link_arguments('-L/usr/local/lib', language: 'c')
+  extra_lib_dirs = ['/usr/local/lib']
+endif
+
 # Required dependencies
 flex = find_program('flex', 'lex', required: true)
 bison = find_program('bison', 'yacc', 'byacc', required: true)
-socket_dep = cc.find_library('socket', required: false)
+socket_dep = cc.find_library('socket', required: false, dirs: extra_lib_dirs)
 sqlite3_dep = dependency('sqlite3', required: true)
 dl_dep = dependency('dl', required: false)
-ltdl_dep = cc.find_library('ltdl', required: true)
-crypt_dep = cc.find_library('crypt', required: false)
+ltdl_dep = cc.find_library('ltdl', required: true, dirs: extra_lib_dirs)
+crypt_dep = cc.find_library('crypt', required: false, dirs: extra_lib_dirs)
 if not crypt_dep.found()
-  crypt_dep = cc.find_library('descrypt', required: false)
+  crypt_dep = cc.find_library('descrypt', required: false, dirs: extra_lib_dirs)
 endif
 
 # Optional dependencies
