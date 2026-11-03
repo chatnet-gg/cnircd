@@ -1,5 +1,5 @@
 project('cnircd', 'c',
-  version: '1.0',
+  version: '1.2',
   # b_lundef=false: our modules (ircd/modules/*) are shared libs with
   # symbols only resolved once dlopen()'d into the running ircd, not at
   # link time -- meson's default (b_lundef=true) requires every symbol
