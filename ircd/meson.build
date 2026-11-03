@@ -79,7 +79,7 @@ libircd_sources = files(
 libircd_inc = include_directories('../include')
 
 libircd = shared_library('ircd',
-  [libircd_sources, ircd_creation, ircd_lexer, ircd_parser, ircd_version, serno_h],
+  [libircd_sources, ircd_creation, ircd_lexer, ircd_parser, ircd_version, serno_h, datecode_h],
   dependencies: [librb_dep, ltdl_dep],
   include_directories: libircd_inc,
   install: true,
