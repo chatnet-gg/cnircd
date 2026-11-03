@@ -302,7 +302,7 @@ privset "realhostbot" {
 };
 
 privset "bopm" {
-	privs = oper:general, oper:kline, oper:unkline, oper:xline, usermode:servnotice;
+	privs = oper:general, oper:kill, oper:kline, oper:unkline, usermode:servnotice, auspex:oper;
 };
 
 /* Copied verbatim from the network -- keep these identical so
