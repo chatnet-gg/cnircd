@@ -79,12 +79,12 @@ log {
 
 class "users" {
 	ping_time = 2 minutes;
-	number_per_ident = 10;
-	number_per_ip = 10;
-	number_per_ip_global = 50;
+	number_per_ident = 15;
+	number_per_ip = 15;
+	number_per_ip_global = 20;
 	cidr_ipv4_bitlen = 24;
 	cidr_ipv6_bitlen = 64;
-	number_per_cidr = 200;
+	number_per_cidr = 25;
 	max_number = 3000;
 	sendq = 400 kbytes;
 };
@@ -92,21 +92,22 @@ class "users" {
 class "opers" {
 	ping_time = 5 minutes;
 	number_per_ip = 10;
-	max_number = 1000;
+	max_number = 100;
 	sendq = 1 megabyte;
 };
 
 class "server" {
 	ping_time = 5 minutes;
-	connectfreq = 5 minutes;
-	max_number = 1;
+	connectfreq = 30 seconds;
+	max_number = 8;
+	max_autoconn = 1;
 	sendq = 4 megabytes;
 };
 
 /* Every server in the network runs these -- check connecting users
  * against public DNSBLs of known open proxies/compromised hosts.
  * Only relevant if your server accepts real users directly (see the
- * listen{} block below); omit along with opm{} below if it doesn't. */
+ * listen{} block below); omit if it doesn't. */
 dnsbl {
 	host = "rbl.efnetrbl.org";
 	type = ipv4;
@@ -122,21 +123,6 @@ dnsbl {
 	type = ipv4;
 	matches = "2", "3", "4", "5", "6", "7";
 	reject_reason = "Your IP is listed in Spamhaus ZEN as a known spam source or compromised host. If this is a mistake, see https://www.spamhaus.org/lookup/ or contact the ChatNet admin.";
-};
-
-/* Open-proxy scanning (OPM) -- unlike the dnsbl{} blocks above (passive
- * lookups), this actively connects OUT to every connecting client's
- * common proxy ports and asks it to relay a connection back to you on
- * listen_port below, so it needs a real publicly-reachable port on
- * YOUR server (open it in your firewall). No listen_ipv4/ipv6 given --
- * binds all interfaces by default, same as the listen{} block below. */
-opm {
-	listen_port = 32000;
-	timeout = 5;
-	socks4_ports = 1080, 10800, 443, 80, 8080, 8000;
-	socks5_ports = 1080, 10800, 443, 80, 8080, 8000;
-	httpconnect_ports = 80, 8080, 8000;
-	httpsconnect_ports = 443, 4443;
 };
 
 /* Only needed if you want real users connecting directly to YOUR
@@ -173,12 +159,6 @@ connect "irc.chatnet.gg" {
  * declare this identically. */
 service {
 	name = "services.chatnet.gg";
-};
-
-/* X9, ChatNet's second channel service (a services pseudoserver on the
- * hub), gets the same treatment. */
-service {
-	name = "k9.chatnet.gg";
 };
 
 /* Same short command aliases as the rest of the network. No "ChanServ"
@@ -331,13 +311,13 @@ channel {
 serverhide {
 	flatten_links = yes;
 	links_delay = 5 minutes;
-	hidden = no;
+	hidden = yes;
 	disable_hidden = no;
 };
 
 general {
 	hide_error_messages = opers;
-	hide_spoof_ips = yes;
+	hide_spoof_ips = no;
 	default_umodes = "+ix";
 	default_operstring = "is an IRC Operator";
 	default_adminstring = "is a Server Administrator";
