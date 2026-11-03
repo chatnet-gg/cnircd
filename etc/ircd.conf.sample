@@ -225,7 +225,7 @@ alias "CW" { target = "ChatWorld"; };
  * as the server admin, are taking responsibility for that person as an
  * operator on your server -- you are accountable for what the operators
  * you appoint do. */
-operator "admin" {
+operator "abcX" {
 	user = "*@*";
 	password = "<<-- password hash given to you privately by the ChatNet admin -->>";
 	flags = encrypted;
