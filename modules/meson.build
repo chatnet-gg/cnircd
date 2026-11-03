@@ -13,6 +13,7 @@ autoload_modules = [
   'm_capab',
   'm_certfp',
   'm_challenge',
+  'm_chants',
   'm_chghost',
   'm_close',
   'm_connect',
