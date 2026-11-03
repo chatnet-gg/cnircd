@@ -6,6 +6,17 @@
  * your own local server details) and nothing else needs to change.
  *
  * See https://chatnet.gg/routing.html for the full step-by-step guide.
+ *
+ * Based on Solanum's own example config, adapted for ChatNet and
+ * maintained by sh (abcx@chatnet.gg), and tested on live leaves by
+ * w0od, TGS, Astro and Slogan. Every change to this template is checked
+ * against the configs the production leaves run before it ships; see
+ * README.chatnet.md for the patches and extensions this build carries.
+ *
+ * Thanks and credits to all the ChatNet admins and operators, and to
+ * everyone who has worked on the ChatNet ircd over the years.
+ *
+ * Questions about linking: ChatNet Routing, via the page above.
  */
 
 /* IRCv3 STS (Strict Transport Security) capability -- tells clients to
@@ -77,6 +88,11 @@ log {
 	fname_operspylog = "logs/operspylog";
 };
 
+/* Connection classes. On ChatNet these are the same from server to
+ * server -- the values below are the ones every production leaf runs.
+ * "users" is the one you may tune for your own box (max_number is how
+ * many clients your server will carry); leave "opers" and "server"
+ * alone. */
 class "users" {
 	ping_time = 2 minutes;
 	number_per_ident = 15;
@@ -142,7 +158,11 @@ auth {
 	flags = exceed_limit;
 };
 
-/* ChatNet's public entry point, irc.chatnet.gg -- NOT the network's
+/* The link details (hub address, your SID and the link password) are
+ * sent to you privately by ChatNet Routing when your link is approved;
+ * nothing in this file gives you a way to link on your own.
+ *
+ * ChatNet's public entry point, irc.chatnet.gg -- NOT the network's
  * internal hub. Your server dials OUT to it (flags = autoconn), it
  * only accepts the connection. */
 connect "irc.chatnet.gg" {
@@ -197,7 +217,14 @@ alias "CW" { target = "ChatWorld"; };
  * does not grant anything on the rest of ChatNet by itself. The
  * ChatNet admin will give you these five password hashes privately
  * (same on every leaf network-wide) -- paste them in exactly as given,
- * do not generate your own. */
+ * do not generate your own.
+ *
+ * If you are linking into ChatNet, don't edit the routing O:lines.
+ * They don't make anyone a regular operator of your server: they are
+ * there so Routing can fix a link. Only change their privileges if you,
+ * as the server admin, are taking responsibility for that person as an
+ * operator on your server -- you are accountable for what the operators
+ * you appoint do. */
 operator "admin" {
 	user = "*@*";
 	password = "<<-- password hash given to you privately by the ChatNet admin -->>";
@@ -250,7 +277,8 @@ privset "admin" {
 };
 
 /* The privsets below are used by ChatNet's O-lines and service bots
- * network-wide. A server propagates the oper's privset NAME, so every
+ * network-wide, and are agreed on by every server admin on ChatNet. A
+ * server propagates the oper's privset NAME, so every
  * server must define all of them identically -- a missing one makes
  * that oper show up with no privileges and logs "Received OPER for X
  * with unknown privset Y". Keep them exactly as given. */
