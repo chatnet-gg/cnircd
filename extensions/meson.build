@@ -11,6 +11,7 @@ extension_modules = [
   'chm_operpeace',
   'chm_regmsg',
   'chm_sslonly',
+  'cn_clone_except',
   'cn_ip_cloak',
   'cn_whois_notify',
   'createauthonly',
