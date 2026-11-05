@@ -48,6 +48,10 @@
 #include "s_user.h"
 #include "numeric.h"
 #include "match.h"
+#include "msg.h"
+#include "parse.h"
+#include "hash.h"
+#include "s_serv.h"
 
 static const char cn_whois_notify_desc[] =
 	"Adds user mode +W: notifies you when someone /WHOIS's you.";
@@ -67,6 +71,16 @@ static const char cn_whois_notify_staff_host_prefix[] = "chatnet/staff/";
 
 static void whois_notify_process(void *);
 static void whois_notify_umode_check(void *);
+static void me_whoisnotify(struct MsgBuf *, struct Client *, struct Client *, int, const char **);
+
+/* ENCAP <server of the target> WHOISNOTIFY <target uid>: sent by the server that answered a WHOIS on a remote +W user,
+ * the origin of the message is the user who asked. Servers without this module ignore the ENCAP. */
+struct Message whoisnotify_msgtab = {
+	"WHOISNOTIFY", 0, 0, 0, 0,
+	{mg_ignore, mg_ignore, mg_ignore, mg_ignore, {me_whoisnotify, 2}, mg_ignore}
+};
+
+mapi_clist_av1 cn_whois_notify_clist[] = { &whoisnotify_msgtab, NULL };
 
 static bool
 cn_whois_notify_is_service_nick(const char *nick)
@@ -89,10 +103,42 @@ cn_whois_notify_is_staff_host(const char *host)
 
 mapi_hfn_list_av1 cn_whois_notify_hfnlist[] = {
 	{ "doing_whois", whois_notify_process },
+	{ "doing_whois_global", whois_notify_process },
 	{ "umode_changed", whois_notify_umode_check },
 	{ NULL, NULL }
 };
 
+/* The rules, in one place (they only use fields every server knows about both users). */
+static bool
+whois_notify_wanted(struct Client *source_p, struct Client *target_p)
+{
+	if (source_p == target_p)
+		return false;
+
+	if (cn_whois_notify_is_service_nick(source_p->name))
+		return false;
+
+	if (cn_whois_notify_is_staff_host(target_p->host) && cn_whois_notify_is_staff_host(source_p->host))
+		return false;
+
+	return (target_p->umodes & user_modes['W']) != 0;
+}
+
+static void
+whois_notify_deliver(struct Client *source_p, struct Client *target_p)
+{
+	if (whois_notify_wanted(source_p, target_p))
+		sendto_one_notice(target_p, ":*** %s (%s@%s) is doing a /WHOIS on you",
+			source_p->name, source_p->username, source_p->host);
+}
+
+/*
+ * Hooked on "doing_whois" (a user of THIS server asked) and "doing_whois_global" (a user of another server asked and the
+ * WHOIS was forwarded to the server of the target, e.g. /whois nick nick).
+ *  - target on this server: tell it now;
+ *  - local asker, target on another server: a plain /whois is answered here and never reaches the target's server, so
+ *    pass the news on with an ENCAP, only when the target has +W (every server knows the user modes of remote users).
+ */
 static void
 whois_notify_process(void *data_)
 {
@@ -100,23 +146,29 @@ whois_notify_process(void *data_)
 	struct Client *source_p = data->client;
 	struct Client *target_p = data->target;
 
-	if (!MyClient(target_p))
-		return;
-
-	if (source_p == target_p)
-		return;
-
-	if (cn_whois_notify_is_service_nick(source_p->name))
-		return;
-
-	if (cn_whois_notify_is_staff_host(target_p->host) && cn_whois_notify_is_staff_host(source_p->host))
-		return;
-
-	if (target_p->umodes & user_modes['W'])
+	if (MyClient(target_p))
 	{
-		sendto_one_notice(target_p, ":*** %s (%s@%s) is doing a /WHOIS on you",
-			source_p->name, source_p->username, source_p->host);
+		whois_notify_deliver(source_p, target_p);
+		return;
 	}
+
+	if (MyClient(source_p) && IsPerson(target_p) && target_p->servptr != NULL && whois_notify_wanted(source_p, target_p))
+		sendto_match_servs(source_p, target_p->servptr->name, CAP_ENCAP, NOCAPS,
+				"ENCAP %s WHOISNOTIFY %s", target_p->servptr->name, use_id(target_p));
+}
+
+/* ENCAP WHOISNOTIFY: parv[1] = uid of the target, source_p = the user who did the WHOIS */
+static void
+me_whoisnotify(struct MsgBuf *msgbuf_p, struct Client *client_p, struct Client *source_p, int parc, const char *parv[])
+{
+	struct Client *target_p;
+
+	if (!IsPerson(source_p))
+		return;
+
+	target_p = find_person(parv[1]);
+	if (target_p != NULL && MyClient(target_p))
+		whois_notify_deliver(source_p, target_p);
 }
 
 static void
@@ -165,5 +217,5 @@ _moddeinit(void)
 	construct_umodebuf();
 }
 
-DECLARE_MODULE_AV2(cn_whois_notify, _modinit, _moddeinit, NULL, NULL,
+DECLARE_MODULE_AV2(cn_whois_notify, _modinit, _moddeinit, cn_whois_notify_clist, NULL,
 			cn_whois_notify_hfnlist, NULL, NULL, cn_whois_notify_desc);
