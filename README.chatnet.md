@@ -131,3 +131,14 @@ leaves before they landed here:
 - **TGS** (tgs@chatnet.gg)
 - **Astro** (astro@chatnet.gg)
 - **Slogan** (slogan@chatnet.gg)
+
+## One configuration standard for every server
+
+`etc/chatnet-common.conf`, `etc/chatnet-clients.conf` and `etc/chatnet-webirc.conf` hold what must be identical on
+every ChatNet server: the module list per role and the privilege sets. Put them next to `ircd.conf`, `.include` them
+once before the `auth{}` and `operator{}` blocks, and keep only what is local to the server (name, SID, ports,
+certificates, `connect{}`, `operator{}`, classes, `auth{}`) in its own `ircd.conf`.
+
+`tools/chatnet-audit.py <ircd.conf> <hub|leaf|leaf-webirc>` compares a server's configuration with the standard and
+prints only the differences (missing modules, privilege sets that differ, peers without an `exempt{}`, the
+`exempt-cw.conf` include). It is read-only.
