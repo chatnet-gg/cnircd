@@ -1,0 +1,20 @@
+# Sample plan for the cn_uplink extension (copy to uplink.plan next to ircd.conf, then: loadmodule "extensions/cn_uplink";)
+#
+# The names after "uplink" must be existing connect{} blocks of this server. The first one is the preferred uplink,
+# the others are fallbacks in order. The stock autoconn of these connect{} blocks is switched off by the extension:
+# it is the only one that creates links to them.
+#
+# Every uplink you probe is a TCP connection that the peer's connection throttle counts: add
+#   exempt { ip = "<this server's address>"; };
+# on the peers, or the probes can be mistaken for a dead peer.
+
+interval 10        # seconds between ticks and probes
+fail 3             # consecutive failed probes before an uplink counts as down (30 s)
+ok 6               # consecutive good probes before it counts as up again (60 s)
+cooldown 600       # seconds to wait after a failed move back to a better uplink
+unstable_drops 3   # link drops within unstable_window that mark an uplink unstable
+unstable_window 1800
+unstable_hold 600  # quiet seconds required before moving back to an unstable uplink
+
+uplink hub.example.net
+uplink hub2.example.net

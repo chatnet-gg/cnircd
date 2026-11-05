@@ -322,11 +322,18 @@ cwx_load_state(void)
 
 	while (fgets(line, sizeof line, f) != NULL)
 	{
-		char host[CWX_HOSTMAX], by[CWX_BYMAX];
+		char *save = NULL, *host, *maxstr, *by;
 		int max;
 
-		if (sscanf(line, "/* CWX %63s %d %31s */", host, &max, by) == 3 &&
-		    cwx_valid_host(host) && max >= 1 && max <= CWX_LIMIT_MAX)
+		if (strncmp(line, "/* CWX ", 7) != 0)       /* no sscanf: its C23 variant needs glibc >= 2.38 */
+			continue;
+		host = strtok_r(line + 7, " \t\r\n", &save);
+		maxstr = host != NULL ? strtok_r(NULL, " \t\r\n", &save) : NULL;
+		by = maxstr != NULL ? strtok_r(NULL, " \t\r\n", &save) : NULL;
+		if (host == NULL || maxstr == NULL || by == NULL)
+			continue;
+		max = atoi(maxstr);
+		if (cwx_valid_host(host) && max >= 1 && max <= CWX_LIMIT_MAX && cwx_valid_by(by))
 			cwx_add(host, max, !strcmp(by, "-") ? "" : by);
 	}
 	fclose(f);

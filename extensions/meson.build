@@ -13,6 +13,7 @@ extension_modules = [
   'chm_sslonly',
   'cn_clone_except',
   'cn_ip_cloak',
+  'cn_uplink',
   'cn_whois_notify',
   'createauthonly',
   'createoperonly',
