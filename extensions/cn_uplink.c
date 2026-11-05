@@ -4,7 +4,7 @@
  *
  * The stock autoconn rotates its connect{} blocks (a tried block goes to the end of the list), has no notion of a
  * preferred uplink and never moves a server back once the preferred one returns. This module replaces it for the
- * servers named in etc/uplink.plan:
+ * servers named in uplink.plan (next to the running ircd.conf):
  *
  *     interval 10        seconds between ticks / probes
  *     fail 3             consecutive failed probes before an uplink counts as down
@@ -125,6 +125,25 @@ cwu_note(const char *fmt, ...)
 	ilog(L_SERVER, "cn_uplink: %s", buf);
 }
 
+/* Directory of the running ircd.conf (e.g. etc-live): the plan and the generated file live next to the live config,
+ * whatever prefix this build was installed with. */
+static void
+cwu_confdir(char *buf, size_t len)
+{
+	const char *cf = ConfigFileEntry.configfile;
+	const char *slash = cf != NULL ? strrchr(cf, '/') : NULL;
+
+	if (slash == NULL)
+		rb_strlcpy(buf, ircd_paths[IRCD_PATH_ETC], len);
+	else
+	{
+		size_t n = (size_t)(slash - cf) < len - 1 ? (size_t)(slash - cf) : len - 1;
+
+		memcpy(buf, cf, n);
+		buf[n] = '\0';
+	}
+}
+
 static bool
 cwu_load_plan(void)
 {
@@ -135,7 +154,12 @@ cwu_load_plan(void)
 	if (getenv("CN_UPLINK_PLAN") != NULL)       /* test labs: one plan per server sharing one install */
 		rb_strlcpy(path, getenv("CN_UPLINK_PLAN"), sizeof path);
 	else
-		snprintf(path, sizeof path, "%s/%s", ircd_paths[IRCD_PATH_ETC], CWU_FILE);
+	{
+		char dir[PATH_MAX];
+
+		cwu_confdir(dir, sizeof dir);
+		snprintf(path, sizeof path, "%s/%s", dir, CWU_FILE);
+	}
 	f = fopen(path, "r");
 	if (f == NULL)
 		return false;

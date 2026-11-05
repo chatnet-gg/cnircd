@@ -10,7 +10,7 @@
  *     :<client> ENCAP * CLONEEXCEPT SYNCSTART   (full resend, e.g. after a burst)
  *     :<client> ENCAP * CLONEEXCEPT SYNCEND     (entries not re-added are dropped)
  *
- * The module keeps the list in memory and writes etc/exempt-cw.conf with one
+ * The module keeps the list in memory and writes exempt-cw.conf next to the running ircd.conf with one
  * class per distinct limit and one auth{} per host, then rehashes. The file is
  * only rewritten, and a rehash only requested, when its content changes, so a
  * full resync at every burst is harmless.
@@ -162,10 +162,32 @@ cwx_free_all(void)
 		cwx_remove(ptr->data);
 }
 
+/* Directory of the running ircd.conf (e.g. etc-live): the plan and the generated file live next to the live config,
+ * whatever prefix this build was installed with. */
+static void
+cwx_confdir(char *buf, size_t len)
+{
+	const char *cf = ConfigFileEntry.configfile;
+	const char *slash = cf != NULL ? strrchr(cf, '/') : NULL;
+
+	if (slash == NULL)
+		rb_strlcpy(buf, ircd_paths[IRCD_PATH_ETC], len);
+	else
+	{
+		size_t n = (size_t)(slash - cf) < len - 1 ? (size_t)(slash - cf) : len - 1;
+
+		memcpy(buf, cf, n);
+		buf[n] = '\0';
+	}
+}
+
 static void
 cwx_path(char *buf, size_t len)
 {
-	snprintf(buf, len, "%s%c%s", ircd_paths[IRCD_PATH_ETC], '/', CWX_FILE);
+	char dir[PATH_MAX];
+
+	cwx_confdir(dir, sizeof dir);
+	snprintf(buf, len, "%s/%s", dir, CWX_FILE);
 }
 
 static bool
