@@ -110,6 +110,30 @@ def main():
     for name in sorted(set(priv) - set(std_priv)):
         out("INFO", "privset only defined here: %s" % name)
 
+    # network-wide blocks (service, serverhide, channel, general, alias, dnsbl) must match the standard
+    def blocks(t):
+        out = {}
+        for m in re.finditer(r'^\s*(service|serverhide|channel|general|alias|dnsbl)(?:\s+"([^"]+)")?\s*\{', t, re.M):
+            depth, j = 1, m.end()
+            while j < len(t) and depth:
+                depth += (t[j] == "{") - (t[j] == "}")
+                j += 1
+            body = re.sub(r"\s+", " ", t[m.end():j - 1]).strip()
+            out.setdefault((m.group(1), m.group(2) or ""), []).append(body)
+        return {k: sorted(v) for k, v in out.items()}
+    sb, nb = blocks(std_text), blocks(text)
+    bad_blocks = 0
+    for key in sorted(sb):
+        label = key[0] + (' "%s"' % key[1] if key[1] else "")
+        if key not in nb:
+            out("DIFF", "network block missing: %s" % label)
+            bad_blocks += 1
+        elif nb[key] != sb[key]:
+            out("DIFF", "network block differs from the standard: %s" % label)
+            bad_blocks += 1
+    if not bad_blocks:
+        out("OK", "network-wide blocks identical to the standard: %d" % len(sb))
+
     # every operator must use a defined privset
     used = set(re.findall(r'privset\s*=\s*"([^"]+)"', text))
     for name in sorted(used - set(priv)):
