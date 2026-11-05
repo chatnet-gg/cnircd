@@ -13,6 +13,7 @@
  *     unstable_drops 3   link drops in unstable_window seconds that make an uplink "unstable"
  *     unstable_window 1800
  *     unstable_hold 600  clean seconds required before moving back to an unstable uplink
+ *     accept_push no     yes = ChatWorld may set the uplink lines (ENCAP UPLINKPLAN), see below
  *     uplink hub.example.net      first = preferred
  *     uplink backup.example.net   then the fallbacks, in order
  *
@@ -27,6 +28,11 @@
  *  - Probes are plain TCP connects to the uplink's port, only toward uplinks we are NOT linked to and that are
  *    better than the one we are on (all of them when isolated). The peer's connection throttle counts them: the
  *    peer needs an exempt{} for this server's address.
+ *
+ * Services can also set the plan: ChatWorld's ROUTING PUSH sends `ENCAP <server> UPLINKPLAN <name,name,...>`. A server
+ * only takes it if its own plan file says `accept_push yes` (default no), the sender is a services client (+S), every name
+ * is one of its own connect{} blocks, and it is not itself. The plan file is rewritten (uplink lines only, the other
+ * directives and comments stay) and reloaded; opers see one notice.
  *
  * Oper command: UPLINK STATUS (any oper) | FREEZE ON|OFF | RELOAD (need the oper:routing privilege).
  */
@@ -69,6 +75,8 @@ static int cwu_n;
 static int cfg_interval = 10, cfg_fail = 3, cfg_ok = 6, cfg_cooldown = 600;
 static int cfg_unstable_drops = 3, cfg_unstable_window = 1800, cfg_unstable_hold = 600;
 static bool cwu_frozen;
+static bool cfg_accept_push;
+static char cwu_last_push[160];      /* who/what/when of the last accepted push, for UPLINK STATUS */
 static time_t cwu_connecting_until, cwu_cooldown_until, cwu_fb_deadline, cwu_ready_since, cwu_att_deadline;
 static int cwu_att_idx = -1;   /* uplink we are currently trying to link to when isolated */
 static int cwu_att_oks;        /* its good-probe count when the attempt started: >0 means it looked reachable */
@@ -78,12 +86,19 @@ static bool cwu_last_unstable;
 static struct ev_entry *cwu_ev;
 
 static void mo_uplink(struct MsgBuf *, struct Client *, struct Client *, int, const char **);
+static void me_uplinkplan(struct MsgBuf *, struct Client *, struct Client *, int, const char **);
 
 struct Message uplink_msgtab = {
 	"UPLINK", 0, 0, 0, 0,
 	{mg_ignore, mg_not_oper, mg_ignore, mg_ignore, mg_ignore, {mo_uplink, 2}}
 };
-mapi_clist_av1 cwu_clist[] = { &uplink_msgtab, NULL };
+/* ENCAP <this server> UPLINKPLAN <name,name,...> from services */
+struct Message uplinkplan_msgtab = {
+	"UPLINKPLAN", 0, 0, 0, 0,
+	{mg_ignore, mg_ignore, mg_ignore, mg_ignore, {me_uplinkplan, 2}, mg_ignore}
+};
+
+mapi_clist_av1 cwu_clist[] = { &uplink_msgtab, &uplinkplan_msgtab, NULL };
 
 static void cwu_tick(void *);
 static bool cwu_load_plan(void);
@@ -144,6 +159,20 @@ cwu_confdir(char *buf, size_t len)
 	}
 }
 
+static void
+cwu_plan_path(char *path, size_t len)
+{
+	if (getenv("CN_UPLINK_PLAN") != NULL)       /* test labs: one plan per server sharing one install */
+		rb_strlcpy(path, getenv("CN_UPLINK_PLAN"), len);
+	else
+	{
+		char dir[PATH_MAX];
+
+		cwu_confdir(dir, sizeof dir);
+		snprintf(path, len, "%s/%s", dir, CWU_FILE);
+	}
+}
+
 static bool
 cwu_load_plan(void)
 {
@@ -151,20 +180,13 @@ cwu_load_plan(void)
 	FILE *f;
 	int n = 0;
 
-	if (getenv("CN_UPLINK_PLAN") != NULL)       /* test labs: one plan per server sharing one install */
-		rb_strlcpy(path, getenv("CN_UPLINK_PLAN"), sizeof path);
-	else
-	{
-		char dir[PATH_MAX];
-
-		cwu_confdir(dir, sizeof dir);
-		snprintf(path, sizeof path, "%s/%s", dir, CWU_FILE);
-	}
+	cwu_plan_path(path, sizeof path);
 	f = fopen(path, "r");
 	if (f == NULL)
 		return false;
 
 	memset(cwu_ups, 0, sizeof cwu_ups);
+	cfg_accept_push = false;                    /* the file is the truth: no line, no push */
 	while (fgets(line, sizeof line, f) != NULL)
 	{
 		char key[32], val[64];
@@ -196,6 +218,8 @@ cwu_load_plan(void)
 			cfg_unstable_window = v;
 		else if (!strcmp(key, "unstable_hold") && v >= 0)
 			cfg_unstable_hold = v;
+		else if (!strcmp(key, "accept_push"))
+			cfg_accept_push = !strcmp(val, "yes") || !strcmp(val, "1") || !strcmp(val, "on");
 	}
 	fclose(f);
 	cwu_n = n;
@@ -509,6 +533,127 @@ cwu_tick(void *unused)
 	}
 }
 
+
+/* A name is accepted only if it is a plain server name and one of OUR connect{} blocks (and not this server). */
+static bool
+cwu_push_name_ok(const char *name, char *why, size_t whylen)
+{
+	const char *p;
+
+	if (*name == '\0' || strlen(name) >= sizeof cwu_ups[0].name)
+	{
+		snprintf(why, whylen, "bad name length");
+		return false;
+	}
+	for (p = name; *p != '\0'; p++)
+		if (!(isalnum((unsigned char)*p) || *p == '.' || *p == '-' || *p == '_'))
+		{
+			snprintf(why, whylen, "bad character in %s", name);
+			return false;
+		}
+	if (!irccmp(name, me.name))
+	{
+		snprintf(why, whylen, "%s is this server", name);
+		return false;
+	}
+	if (find_server_conf(name) == NULL)
+	{
+		snprintf(why, whylen, "%s is not a connect{} block here", name);
+		return false;
+	}
+	return true;
+}
+
+/* Rewrite the plan file keeping everything except the uplink lines, then append the new uplink lines. */
+static bool
+cwu_write_plan(const char names[][64], int count)
+{
+	char path[PATH_MAX], tmp[PATH_MAX], line[512];
+	FILE *in, *out;
+	int i;
+
+	cwu_plan_path(path, sizeof path);
+	snprintf(tmp, sizeof tmp, "%s.tmp", path);
+	in = fopen(path, "r");
+	out = fopen(tmp, "w");
+	if (out == NULL)
+	{
+		if (in != NULL)
+			fclose(in);
+		return false;
+	}
+	while (in != NULL && fgets(line, sizeof line, in) != NULL)
+		if (strncmp(line, "uplink ", 7) != 0 && strncmp(line, "uplink\t", 7) != 0)
+			fputs(line, out);
+	if (in != NULL)
+		fclose(in);
+	for (i = 0; i < count; i++)
+		fprintf(out, "uplink %s\n", names[i]);
+	if (fclose(out) != 0 || rename(tmp, path) != 0)
+		return false;
+	return true;
+}
+
+static void
+me_uplinkplan(struct MsgBuf *msgbuf_p, struct Client *client_p, struct Client *source_p, int parc, const char *parv[])
+{
+	char names[CWU_MAX][64], why[128], list[512], shown[400];
+	char *tok, *save = NULL;
+	int count = 0, i, j;
+
+	if (!IsPerson(source_p) || !IsService(source_p))
+		return;                                     /* only the services pseudo-clients (+S) may set a plan */
+
+	if (!cfg_accept_push)
+	{
+		sendto_realops_snomask(SNO_GENERAL, L_ALL, "cn_uplink: plan from %s ignored (accept_push is off here)", source_p->name);
+		return;
+	}
+
+	rb_strlcpy(list, parv[1], sizeof list);
+	for (tok = strtok_r(list, ",", &save); tok != NULL; tok = strtok_r(NULL, ",", &save))
+	{
+		if (count >= CWU_MAX)
+		{
+			snprintf(why, sizeof why, "more than %d uplinks", CWU_MAX);
+			goto refused;
+		}
+		if (!cwu_push_name_ok(tok, why, sizeof why))
+			goto refused;
+		for (j = 0; j < count; j++)
+			if (!irccmp(names[j], tok))
+			{
+				snprintf(why, sizeof why, "%s listed twice", tok);
+				goto refused;
+			}
+		rb_strlcpy(names[count++], tok, sizeof names[0]);
+	}
+	if (count == 0)
+	{
+		snprintf(why, sizeof why, "empty plan");
+		goto refused;
+	}
+	if (!cwu_write_plan(names, count))
+	{
+		snprintf(why, sizeof why, "cannot write the plan file");
+		goto refused;
+	}
+	(void) cwu_load_plan();
+
+	shown[0] = '\0';
+	for (i = 0; i < count; i++)
+	{
+		rb_strlcat(shown, i ? " > " : "", sizeof shown);
+		rb_strlcat(shown, names[i], sizeof shown);
+	}
+	snprintf(cwu_last_push, sizeof cwu_last_push, "%s at %ld", source_p->name, (long) rb_current_time());
+	cwu_note("uplink plan set by %s: %s", source_p->name, shown);
+	return;
+
+refused:
+	cwu_note("uplink plan from %s REFUSED: %s", source_p->name, why);
+}
+
 static void
 mo_uplink(struct MsgBuf *msgbuf_p, struct Client *client_p, struct Client *source_p, int parc, const char *parv[])
 {
@@ -533,8 +678,9 @@ mo_uplink(struct MsgBuf *msgbuf_p, struct Client *client_p, struct Client *sourc
 	}
 	else if (!irccmp(parv[1], "STATUS"))
 	{
-		sendto_one_notice(source_p, ":UPLINK%s: interval %d fail %d ok %d cooldown %d s", cwu_frozen ? " (FROZEN)" : "",
-		                  cfg_interval, cfg_fail, cfg_ok, cfg_cooldown);
+		sendto_one_notice(source_p, ":UPLINK%s: interval %d fail %d ok %d cooldown %d s, accept_push %s%s%s",
+		                  cwu_frozen ? " (FROZEN)" : "", cfg_interval, cfg_fail, cfg_ok, cfg_cooldown,
+		                  cfg_accept_push ? "yes" : "no", cwu_last_push[0] ? ", last plan from " : "", cwu_last_push);
 		for (i = 0; i < cwu_n; i++)
 		{
 			const struct cwu_up *u = &cwu_ups[i];

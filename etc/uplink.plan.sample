@@ -8,6 +8,7 @@
 #   exempt { ip = "<this server's address>"; };
 # on the peers, or the probes can be mistaken for a dead peer.
 
+accept_push no     # yes = ChatWorld's ROUTING PUSH may set the uplink lines below (only services, only names of your own connect{} blocks)
 interval 10        # seconds between ticks and probes
 fail 3             # consecutive failed probes before an uplink counts as down (30 s)
 ok 6               # consecutive good probes before it counts as up again (60 s)
