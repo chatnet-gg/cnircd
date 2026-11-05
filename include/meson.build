@@ -5,7 +5,9 @@ setup_h = configure_file(
 )
 
 serno_h = vcs_tag(
-  command: ['git', 'rev-list', '-1', '--no-commit-header', '--date=format:%Y%m%d', '--format=%cd-%h', 'HEAD'],
+  # In a git checkout the version comes from git. A source archive (git archive, GitHub's "Download") has no .git, but
+  # git writes the commit into VERSION_INFO there (export-subst); an unexpanded "$Format:" line means "ask git".
+  command: ['sh', '-c', 'l=$(sed -n 1p "$1" 2>/dev/null); case "$l" in ""|*Format:*) git rev-list -1 --no-commit-header --date=format:%Y%m%d --format=%cd-%h HEAD;; *) echo "$l" | awk \'{gsub("-","",$1); print $1 "-" $2}\';; esac', 'sh', meson.project_source_root() / 'VERSION_INFO'],
   input: 'serno.h.in',
   output: 'serno.h',
   replace_string: '@SERNO@',
@@ -13,7 +15,7 @@ serno_h = vcs_tag(
 )
 
 datecode_h = vcs_tag(
-  command: ['git', 'rev-list', '-1', '--no-commit-header', '--format=%ct', 'HEAD'],
+  command: ['sh', '-c', 'l=$(sed -n 2p "$1" 2>/dev/null); case "$l" in ""|*Format:*) git rev-list -1 --no-commit-header --format=%ct HEAD;; *) echo "$l";; esac', 'sh', meson.project_source_root() / 'VERSION_INFO'],
   input: 'datecode.h.in',
   output: 'datecode.h',
   replace_string: '@DATECODE@',
