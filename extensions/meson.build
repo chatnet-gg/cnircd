@@ -12,6 +12,7 @@ extension_modules = [
   'chm_regmsg',
   'chm_sslonly',
   'cn_clone_except',
+  'cn_chanrename',
   'cn_ip_cloak',
   'cn_uplink',
   'cn_whois_notify',
