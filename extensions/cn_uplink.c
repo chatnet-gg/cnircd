@@ -68,6 +68,11 @@ struct cwu_up
 	time_t bad_until;            /* do not pick it as a target before this time */
 	time_t drops[CWU_DROPS];
 	int ndrops;
+	struct timeval probe_start;
+	time_t last_probe;           /* when the last probe finished, 0 = never */
+	bool last_probe_ok;
+	long last_probe_ms;
+	unsigned long probes_ok, probes_fail;
 };
 
 static struct cwu_up cwu_ups[CWU_MAX];
@@ -75,6 +80,11 @@ static int cwu_n;
 static int cfg_interval = 10, cfg_fail = 3, cfg_ok = 6, cfg_cooldown = 600;
 static int cfg_unstable_drops = 3, cfg_unstable_window = 1800, cfg_unstable_hold = 600;
 static bool cwu_frozen;
+static time_t cwu_freeze_until;      /* 0 = no expiry */
+static time_t cwu_override_until;    /* a temporary plan (UPLINK SET) is active until then; 0 = the plan file rules */
+static time_t cwu_debug_until;       /* UPLINK DEBUG: every probe and decision goes to the log and the history file */
+static char cwu_last_event[160];
+static time_t cwu_last_event_t;
 static bool cfg_accept_push;
 #define CWU_REMOTE 8
 static char cwu_remote_from[CWU_REMOTE][64];   /* servers whose opers may run UPLINK RELOAD/STATUS here by ENCAP */
@@ -105,7 +115,7 @@ struct Message uplinkplan_msgtab = {
 mapi_clist_av1 cwu_clist[] = { &uplink_msgtab, &uplinkplan_msgtab, NULL };
 
 static void cwu_tick(void *);
-static bool cwu_load_plan(void);
+static bool cwu_load_plan(bool keep, bool may_generate);
 static void cwu_conf_hook(void *);
 
 mapi_hfn_list_av1 cwu_hfnlist[] = {
@@ -116,7 +126,7 @@ mapi_hfn_list_av1 cwu_hfnlist[] = {
 static int
 modinit(void)
 {
-	(void) cwu_load_plan();
+	(void) cwu_load_plan(false, false);          /* the connect{} blocks may not be read yet: no automatic plan here */
 	cwu_ev = rb_event_add("cn_uplink_tick", cwu_tick, NULL, cfg_interval);
 	return 0;
 }
@@ -131,6 +141,36 @@ moddeinit(void)
 
 DECLARE_MODULE_AV2(cn_uplink, modinit, moddeinit, cwu_clist, NULL, cwu_hfnlist, NULL, NULL, cwu_desc);
 
+/* Long-lived history of the decisions, one line per event, in a file of its own next to the plan (rotated at 1 MiB,
+ * one old generation kept). Format: YYYY-MM-DD HH:MM:SS text. */
+#define CWU_HIST     "uplink.history"
+#define CWU_HIST_MAX (1024 * 1024)
+
+static void cwu_confdir(char *buf, size_t len);
+
+static void
+cwu_hist(const char *text)
+{
+	char dir[PATH_MAX], path[PATH_MAX], old[PATH_MAX + 4], ts[32];
+	struct stat st;
+	time_t t = rb_current_time();
+	FILE *f;
+
+	cwu_confdir(dir, sizeof dir);
+	snprintf(path, sizeof path, "%s/%s", dir, CWU_HIST);
+	if (stat(path, &st) == 0 && st.st_size > CWU_HIST_MAX)
+	{
+		snprintf(old, sizeof old, "%s.1", path);
+		(void) rename(path, old);
+	}
+	f = fopen(path, "a");
+	if (f == NULL)
+		return;
+	strftime(ts, sizeof ts, "%Y-%m-%d %H:%M:%S", localtime(&t));
+	fprintf(f, "%s %s\n", ts, text);
+	fclose(f);
+}
+
 static void
 cwu_note(const char *fmt, ...)
 {
@@ -142,6 +182,26 @@ cwu_note(const char *fmt, ...)
 	va_end(ap);
 	sendto_realops_snomask(SNO_GENERAL, L_ALL | L_NETWIDE, "cn_uplink: %s", buf);   /* every oper on the network sees who changed what */
 	ilog(L_SERVER, "cn_uplink: %s", buf);
+	cwu_hist(buf);
+	rb_strlcpy(cwu_last_event, buf, sizeof cwu_last_event);
+	cwu_last_event_t = rb_current_time();
+}
+
+/* Detail for UPLINK DEBUG: log and history only, never the opers' screens. */
+static void
+cwu_dbg(const char *fmt, ...)
+{
+	char buf[256], line[280];
+	va_list ap;
+
+	if (cwu_debug_until == 0)
+		return;
+	va_start(ap, fmt);
+	vsnprintf(buf, sizeof buf, fmt, ap);
+	va_end(ap);
+	ilog(L_SERVER, "cn_uplink: debug: %s", buf);
+	snprintf(line, sizeof line, "debug: %s", buf);
+	cwu_hist(line);
 }
 
 /* Directory of the running ircd.conf (e.g. etc-live): the plan and the generated file live next to the live config,
@@ -177,19 +237,71 @@ cwu_plan_path(char *path, size_t len)
 	}
 }
 
+/* No uplink.plan: build one from the connect{} blocks that have autoconn on, in the order they appear in ircd.conf,
+ * and write it. Only blocks the admin already marked "connect out to this one" count, so a hub does not turn its
+ * leaves into uplinks. Whoever wants another order or accept_push creates or edits the file. */
 static bool
-cwu_load_plan(void)
+cwu_auto_plan(void)
 {
-	char path[PATH_MAX], line[256];
+	char path[PATH_MAX], list[256] = "";
+	rb_dlink_node *ptr;
 	FILE *f;
 	int n = 0;
 
 	cwu_plan_path(path, sizeof path);
+	for (ptr = server_conf_list.tail; ptr != NULL && n < CWU_MAX; ptr = ptr->prev)       /* the list is newest-first */
+	{
+		const struct server_conf *sc = ptr->data;
+
+		if (!ServerConfAutoconn(sc) || ServerConfIllegal(sc) || !irccmp(sc->name, me.name))
+			continue;
+		if (strlen(sc->name) >= sizeof cwu_ups[0].name)
+			continue;
+		n++;
+		rb_strlcat(list, n > 1 ? " > " : "", sizeof list);
+		rb_strlcat(list, sc->name, sizeof list);
+	}
+	if (n == 0)
+		return false;
+	f = fopen(path, "w");
+	if (f == NULL)
+		return false;
+	fprintf(f, "# uplink.plan written by cn_uplink because none existed: the connect{} blocks with autoconn, in the order of ircd.conf.\n"
+	           "# Edit it or replace it freely; a rehash or UPLINK RELOAD reads it. accept_push is off unless you add it.\n");
+	for (ptr = server_conf_list.tail; ptr != NULL; ptr = ptr->prev)
+	{
+		const struct server_conf *sc = ptr->data;
+
+		if (ServerConfAutoconn(sc) && !ServerConfIllegal(sc) && irccmp(sc->name, me.name) &&
+		    strlen(sc->name) < sizeof cwu_ups[0].name && n-- > 0)
+			fprintf(f, "uplink %s\n", sc->name);
+	}
+	fclose(f);
+	cwu_note("no uplink.plan here: wrote one from the autoconn connect{} blocks: %s", list);
+	return true;
+}
+
+/* keep: carry the probe counters and drops of entries that are still in the plan (a rehash must not reset them). */
+static bool
+cwu_load_plan(bool keep, bool may_generate)
+{
+	char path[PATH_MAX], line[256];
+	struct cwu_up old[CWU_MAX];
+	int oldn = cwu_n;
+	FILE *f;
+	int n = 0, k, m;
+
+	cwu_plan_path(path, sizeof path);
 	f = fopen(path, "r");
+	if (f == NULL && may_generate && cwu_auto_plan())
+		f = fopen(path, "r");
 	if (f == NULL)
 		return false;
 
+	memcpy(old, cwu_ups, sizeof old);
 	memset(cwu_ups, 0, sizeof cwu_ups);
+	cwu_override_until = 0;                     /* reading the file ends any temporary plan */
+	cwu_att_idx = cwu_fb_target = cwu_fb_rollback = -1;
 	cfg_accept_push = false;                    /* the file is the truth: no line, no push */
 	cwu_nremote = 0;                            /* same for remote_from: none listed, no remote control */
 	while (fgets(line, sizeof line, f) != NULL)
@@ -230,7 +342,41 @@ cwu_load_plan(void)
 	}
 	fclose(f);
 	cwu_n = n;
+	if (keep)
+		for (k = 0; k < n; k++)
+			for (m = 0; m < oldn; m++)
+				if (!irccmp(cwu_ups[k].name, old[m].name))
+					cwu_ups[k] = old[m];
 	return true;
+}
+
+/* Every name in the plan must be one of this server's own connect{} blocks, or it is never probed or connected and,
+ * when we are isolated, can be picked again and again without a penalty. Say so loudly. */
+static void
+cwu_check_names(void)
+{
+	int i;
+
+	for (i = 0; i < cwu_n; i++)
+	{
+		if (!irccmp(cwu_ups[i].name, me.name))
+			cwu_note("WARNING: uplink %s in uplink.plan is this server itself", cwu_ups[i].name);
+		else if (find_server_conf(cwu_ups[i].name) == NULL)
+			cwu_note("WARNING: uplink %s in uplink.plan has no connect{} block here: it is never probed or connected", cwu_ups[i].name);
+	}
+}
+
+static void
+cwu_plan_str(char *buf, size_t len)
+{
+	int i;
+
+	buf[0] = '\0';
+	for (i = 0; i < cwu_n; i++)
+	{
+		rb_strlcat(buf, i ? " > " : "", len);
+		rb_strlcat(buf, cwu_ups[i].name, len);
+	}
 }
 
 static bool
@@ -257,10 +403,22 @@ cwu_disable_autoconn(void)
 	}
 }
 
+/* conf_read_end (start-up and every REHASH): the plan is read again here, so a rehash is enough; the connect{} blocks
+ * are known now, so the names are checked and a missing plan can be written. Probe counters are kept. */
 static void
 cwu_conf_hook(void *unused)
 {
+	char before[256], after[256];
+
 	(void) unused;
+	cwu_plan_str(before, sizeof before);
+	if (cwu_load_plan(true, true))
+	{
+		cwu_plan_str(after, sizeof after);
+		if (strcmp(before, after))
+			cwu_note("plan read at rehash: %s", after[0] ? after : "(empty)");
+		cwu_check_names();
+	}
 	cwu_disable_autoconn();
 }
 
@@ -306,8 +464,18 @@ static void
 cwu_probe_cb(rb_fde_t *F, int status, void *data)
 {
 	struct cwu_up *u = data;
+	const struct timeval *tv = rb_current_time_tv();
 
 	u->probing = false;
+	u->last_probe = rb_current_time();
+	u->last_probe_ok = (status == RB_OK);
+	u->last_probe_ms = (tv->tv_sec - u->probe_start.tv_sec) * 1000 + (tv->tv_usec - u->probe_start.tv_usec) / 1000;
+	if (status == RB_OK)
+		u->probes_ok++;
+	else
+		u->probes_fail++;
+	cwu_dbg("probe %s: %s in %ld ms (oks=%d fails=%d)", u->name, status == RB_OK ? "ok" : "FAILED", u->last_probe_ms,
+	        status == RB_OK ? u->oks + 1 : 0, status == RB_OK ? 0 : u->fails + 1);
 	if (status == RB_OK)
 	{
 		u->oks++;
@@ -349,6 +517,7 @@ cwu_probe(struct cwu_up *u)
 	if (F == NULL)
 		return;
 	u->probing = true;
+	u->probe_start = *rb_current_time_tv();
 	rb_connect_tcp(F, (struct sockaddr *)&ss, NULL, cwu_probe_cb, u, 5);
 }
 
@@ -395,6 +564,23 @@ cwu_tick(void *unused)
 	int i, j, li = -1;
 
 	(void) unused;
+	if (cwu_debug_until != 0 && now >= cwu_debug_until)
+	{
+		cwu_note("debug off (time is up)");
+		cwu_debug_until = 0;
+	}
+	if (cwu_freeze_until != 0 && now >= cwu_freeze_until)
+	{
+		cwu_frozen = false;
+		cwu_freeze_until = 0;
+		cwu_note("freeze expired: link management resumed");
+	}
+	if (cwu_override_until != 0 && now >= cwu_override_until)
+	{
+		cwu_note("temporary plan expired: back to the plan file");
+		(void) cwu_load_plan(true, false);
+		cwu_check_names();
+	}
 	if (cwu_frozen || cwu_n == 0)
 		return;
 
@@ -488,6 +674,9 @@ cwu_tick(void *unused)
 				t = i;
 		if (t < 0)
 			return;                              /* every uplink is in its penalty time: wait */
+		cwu_dbg("isolated: trying %s (%s, fails=%d oks=%d strikes=%d)", cwu_ups[t].name,
+		        cwu_ups[t].down ? "marked down, nothing better left" : "first uplink not down and not in penalty",
+		        cwu_ups[t].fails, cwu_ups[t].oks, cwu_ups[t].strikes);
 		cwu_connect(t);
 		cwu_att_idx = t;
 		cwu_att_oks = cwu_ups[t].oks;
@@ -645,7 +834,7 @@ me_uplinkplan(struct MsgBuf *msgbuf_p, struct Client *client_p, struct Client *s
 		snprintf(why, sizeof why, "cannot write the plan file");
 		goto refused;
 	}
-	(void) cwu_load_plan();
+	(void) cwu_load_plan(true, false);
 
 	shown[0] = '\0';
 	for (i = 0; i < count; i++)
@@ -665,27 +854,242 @@ static void
 cwu_status(struct Client *source_p)
 {
 	time_t now = rb_current_time();
+	char extra[200] = "", rem[200] = "";
 	int i;
 
-	sendto_one_notice(source_p, ":UPLINK%s: interval %d fail %d ok %d cooldown %d s, accept_push %s%s%s",
-	                  cwu_frozen ? " (FROZEN)" : "", cfg_interval, cfg_fail, cfg_ok, cfg_cooldown,
-	                  cfg_accept_push ? "yes" : "no", cwu_last_push[0] ? ", last plan from " : "", cwu_last_push);
+	if (cwu_frozen && cwu_freeze_until != 0)
+		snprintf(extra, sizeof extra, " (FROZEN, %ld min left)", (long)((cwu_freeze_until - now + 59) / 60));
+	else if (cwu_frozen)
+		rb_strlcpy(extra, " (FROZEN)", sizeof extra);
+	for (i = 0; i < cwu_nremote; i++)
+	{
+		rb_strlcat(rem, i ? "," : "", sizeof rem);
+		rb_strlcat(rem, cwu_remote_from[i], sizeof rem);
+	}
+	sendto_one_notice(source_p, ":UPLINK%s: interval %d fail %d ok %d cooldown %d s, accept_push %s, remote_from %s%s%s",
+	                  extra, cfg_interval, cfg_fail, cfg_ok, cfg_cooldown, cfg_accept_push ? "yes" : "no",
+	                  rem[0] ? rem : "(none)", cwu_last_push[0] ? ", last plan from " : "", cwu_last_push);
+	if (cwu_override_until != 0)
+		sendto_one_notice(source_p, ":UPLINK: TEMPORARY plan, %ld min left, then back to the plan file",
+		                  (long)((cwu_override_until - now + 59) / 60));
+	if (cwu_debug_until != 0)
+		sendto_one_notice(source_p, ":UPLINK: DEBUG on, %ld min left (log and %s)",
+		                  (long)((cwu_debug_until - now + 59) / 60), CWU_HIST);
+	if (cwu_last_event[0] != '\0')
+		sendto_one_notice(source_p, ":UPLINK: last event %ld s ago: %s", (long)(now - cwu_last_event_t), cwu_last_event);
 	for (i = 0; i < cwu_n; i++)
 	{
 		const struct cwu_up *u = &cwu_ups[i];
+		char pr[96] = "no probe yet", pen[48] = "";
 
-		sendto_one_notice(source_p, ":UPLINK %d %s: %s%s fails=%d oks=%d drops=%d%s", i, u->name,
-		                  u->linked ? "LINKED" : (u->down ? "down" : "up?"), i == 0 ? " (preferred)" : "",
-		                  u->fails, u->oks, cwu_recent_drops(u, now),
-		                  cwu_unstable(u, now) ? " UNSTABLE" : "");
+		if (u->last_probe != 0)
+			snprintf(pr, sizeof pr, "last probe %ld s ago %s %ld ms", (long)(now - u->last_probe),
+			         u->last_probe_ok ? "ok" : "FAILED", u->last_probe_ms);
+		if (u->bad_until > now)
+			snprintf(pen, sizeof pen, " skipped for %ld s (strikes=%d)", (long)(u->bad_until - now), u->strikes);
+		sendto_one_notice(source_p, ":UPLINK %d %s: %s%s fails=%d oks=%d drops=%d%s | %s, probes ok=%lu failed=%lu%s",
+		                  i, u->name, u->linked ? "LINKED" : (u->down ? "down" : "up?"), i == 0 ? " (preferred)" : "",
+		                  u->fails, u->oks, cwu_recent_drops(u, now), cwu_unstable(u, now) ? " UNSTABLE" : "",
+		                  pr, u->probes_ok, u->probes_fail, pen);
 	}
 }
 
-/* RELOAD from a remote oper: the origin server checked oper:routing; here we trust only the servers the local plan
+/* One parsed UPLINK command.  RELOAD|STATUS [mask]   FREEZE ON [min] [mask] | FREEZE OFF [mask]
+ * SET <name,name,..> [min] [mask]   DEBUG ON [min] [mask] | DEBUG OFF [mask].  A number right after the required
+ * arguments is the duration in minutes; whatever follows is the server mask (absent = this server only). */
+struct cwu_cmd
+{
+	char sub[16];
+	bool on;
+	char list[512];
+	int minutes;                 /* 0 = not given */
+	const char *mask;
+};
+
+static bool
+cwu_all_digits(const char *s)
+{
+	return *s != '\0' && strspn(s, "0123456789") == strlen(s) && strlen(s) < 6;
+}
+
+static bool
+cwu_parse(int parc, const char *parv[], struct cwu_cmd *c)
+{
+	int i;
+
+	memset(c, 0, sizeof *c);
+	rb_strlcpy(c->sub, parv[1], sizeof c->sub);
+	if (!irccmp(c->sub, "RELOAD") || !irccmp(c->sub, "STATUS"))
+	{
+		c->mask = parc > 2 ? parv[2] : NULL;
+		return true;
+	}
+	if (!irccmp(c->sub, "FREEZE") || !irccmp(c->sub, "DEBUG"))
+	{
+		if (parc < 3 || (irccmp(parv[2], "ON") && irccmp(parv[2], "OFF")))
+			return false;
+		c->on = !irccmp(parv[2], "ON");
+		i = 3;
+	}
+	else if (!irccmp(c->sub, "SET"))
+	{
+		if (parc < 3)
+			return false;
+		rb_strlcpy(c->list, parv[2], sizeof c->list);
+		i = 3;
+	}
+	else
+		return false;
+	if (parc > i && cwu_all_digits(parv[i]))
+		c->minutes = atoi(parv[i++]);
+	c->mask = parc > i ? parv[i] : NULL;
+	return true;
+}
+
+static int
+cwu_clamp(int minutes, int dflt, int max)
+{
+	if (minutes <= 0)
+		return dflt;
+	return minutes > max ? max : minutes;
+}
+
+/* Does the work of a parsed command on THIS server. remote = it came by ENCAP from a server in remote_from. */
+static void
+cwu_exec(struct Client *source_p, const struct cwu_cmd *c, bool remote)
+{
+	time_t now = rb_current_time();
+	char who[160];
+
+	if (remote)
+		snprintf(who, sizeof who, "%s from %s", source_p->name, source_p->servptr->name);
+	else
+		rb_strlcpy(who, get_oper_name(source_p), sizeof who);
+
+	if (!irccmp(c->sub, "STATUS"))
+	{
+		if (remote)
+			sendto_one_notice(source_p, ":UPLINK: status of %s", me.name);
+		cwu_status(source_p);
+	}
+	else if (!irccmp(c->sub, "RELOAD"))
+	{
+		char before[256], after[256];
+		bool loaded;
+
+		cwu_plan_str(before, sizeof before);
+		loaded = cwu_load_plan(false, true);
+		cwu_plan_str(after, sizeof after);
+		cwu_note("plan reload %s by %s%s%s", loaded ? "done" : "FAILED (file not found)", who,
+		         loaded ? ": " : "", loaded ? after : "");
+		if (loaded)
+			cwu_check_names();
+		sendto_one_notice(source_p, ":UPLINK: %s plan %s", me.name, loaded ? "reloaded" : "file not found");
+	}
+	else if (!irccmp(c->sub, "FREEZE"))
+	{
+		if (c->on)
+		{
+			int m = remote ? cwu_clamp(c->minutes, 30, 120) : (c->minutes > 0 ? cwu_clamp(c->minutes, 0, 1440) : 0);
+
+			cwu_frozen = true;
+			cwu_freeze_until = m > 0 ? now + m * 60 : 0;
+			if (m > 0)
+				cwu_note("FROZEN for %d min by %s: no link changes", m, who);
+			else
+				cwu_note("FROZEN by %s: no link changes, until UPLINK FREEZE OFF", who);
+		}
+		else
+		{
+			cwu_frozen = false;
+			cwu_freeze_until = 0;
+			cwu_note("unfrozen by %s", who);
+		}
+		sendto_one_notice(source_p, ":UPLINK: %s %s", me.name, cwu_frozen ? "frozen" : "unfrozen");
+	}
+	else if (!irccmp(c->sub, "DEBUG"))
+	{
+		if (c->on)
+		{
+			int m = cwu_clamp(c->minutes, 30, 240);
+
+			cwu_debug_until = now + m * 60;
+			cwu_note("debug on for %d min by %s: every probe and decision goes to the log and %s", m, who, CWU_HIST);
+		}
+		else
+		{
+			cwu_debug_until = 0;
+			cwu_note("debug off by %s", who);
+		}
+		sendto_one_notice(source_p, ":UPLINK: %s debug %s", me.name, cwu_debug_until != 0 ? "on" : "off");
+	}
+	else if (!irccmp(c->sub, "SET"))
+	{
+		char names[CWU_MAX][64], why[128], list[512], shown[400];
+		char *tok, *save = NULL;
+		int count = 0, i, j, m = cwu_clamp(c->minutes, 120, 240);
+
+		rb_strlcpy(list, c->list, sizeof list);
+		for (tok = strtok_r(list, ",", &save); tok != NULL; tok = strtok_r(NULL, ",", &save))
+		{
+			if (count >= CWU_MAX)
+			{
+				snprintf(why, sizeof why, "more than %d uplinks", CWU_MAX);
+				goto refused;
+			}
+			if (!cwu_push_name_ok(tok, why, sizeof why))
+				goto refused;
+			for (j = 0; j < count; j++)
+				if (!irccmp(names[j], tok))
+				{
+					snprintf(why, sizeof why, "%s listed twice", tok);
+					goto refused;
+				}
+			rb_strlcpy(names[count++], tok, sizeof names[0]);
+		}
+		if (count == 0)
+		{
+			snprintf(why, sizeof why, "empty list");
+			goto refused;
+		}
+		memset(cwu_ups, 0, sizeof cwu_ups);
+		for (i = 0; i < count; i++)
+			rb_strlcpy(cwu_ups[i].name, names[i], sizeof cwu_ups[0].name);
+		cwu_n = count;
+		cwu_att_idx = cwu_fb_target = cwu_fb_rollback = -1;
+		cwu_override_until = now + m * 60;
+		cwu_plan_str(shown, sizeof shown);
+		cwu_note("TEMPORARY plan set by %s for %d min: %s (then back to the plan file)", who, m, shown);
+		sendto_one_notice(source_p, ":UPLINK: %s temporary plan set for %d min", me.name, m);
+		return;
+refused:
+		cwu_note("temporary plan from %s REFUSED: %s", who, why);
+		sendto_one_notice(source_p, ":UPLINK: %s refused: %s", me.name, why);
+	}
+}
+
+/* The same command, sent on to the servers matching the mask. Duration and ON/OFF are written out so every server
+ * reads the same thing; the receiving server applies its own limits. */
+static void
+cwu_relay(struct Client *source_p, const struct cwu_cmd *c)
+{
+	char args[600];
+
+	if (!irccmp(c->sub, "FREEZE") || !irccmp(c->sub, "DEBUG"))
+		snprintf(args, sizeof args, "%s %s %d", c->sub, c->on ? "ON" : "OFF", c->minutes);
+	else if (!irccmp(c->sub, "SET"))
+		snprintf(args, sizeof args, "SET %s %d", c->list, c->minutes);
+	else
+		snprintf(args, sizeof args, "%s", c->sub);
+	sendto_match_servs(source_p, c->mask, CAP_ENCAP, NOCAPS, "ENCAP %s UPLINK %s", c->mask, args);
+}
+
+/* From a remote oper by ENCAP: the origin server checked oper:routing; here we trust only the servers the local plan
  * lists in remote_from (default: none). Always announced to every oper, with who and from where. */
 static void
 me_uplink(struct MsgBuf *msgbuf_p, struct Client *client_p, struct Client *source_p, int parc, const char *parv[])
 {
+	struct cwu_cmd c;
 	bool ok = false;
 	int i;
 
@@ -700,52 +1104,36 @@ me_uplink(struct MsgBuf *msgbuf_p, struct Client *client_p, struct Client *sourc
 		sendto_one_notice(source_p, ":UPLINK: %s refuses remote control from %s (not in remote_from)", me.name, source_p->servptr->name);
 		return;
 	}
-	if (!irccmp(parv[1], "RELOAD"))
+	if (!cwu_parse(parc, parv, &c))
 	{
-		bool loaded = cwu_load_plan();
-
-		cwu_note("plan reload %s, requested by %s from %s", loaded ? "done" : "FAILED (file not found)", source_p->name, source_p->servptr->name);
-		sendto_one_notice(source_p, ":UPLINK: %s plan %s", me.name, loaded ? "reloaded" : "file not found");
+		sendto_one_notice(source_p, ":UPLINK: %s could not read the command", me.name);
+		return;
 	}
-	else if (!irccmp(parv[1], "STATUS"))
-	{
-		sendto_one_notice(source_p, ":UPLINK: status of %s", me.name);
-		cwu_status(source_p);
-	}
+	cwu_exec(source_p, &c, true);
 }
 
 static void
 mo_uplink(struct MsgBuf *msgbuf_p, struct Client *client_p, struct Client *source_p, int parc, const char *parv[])
 {
-	/* STATUS is for any oper; FREEZE and RELOAD change what the server does with its links. */
-	if ((!irccmp(parv[1], "FREEZE") || !irccmp(parv[1], "RELOAD")) && !HasPrivilege(source_p, "oper:routing"))
+	struct cwu_cmd c;
+
+	if (!cwu_parse(parc, parv, &c))
+	{
+		sendto_one_notice(source_p, ":Syntax: UPLINK STATUS|RELOAD [server]  |  FREEZE ON [min] [server] | FREEZE OFF [server]  |  "
+		                            "SET <name,name,..> [min] [server]  |  DEBUG ON [min] [server] | DEBUG OFF [server]");
+		return;
+	}
+	/* STATUS is for any oper; everything else changes what the server does with its links. */
+	if (irccmp(c.sub, "STATUS") && !HasPrivilege(source_p, "oper:routing"))
 	{
 		sendto_one(source_p, form_str(ERR_NOPRIVS), me.name, source_p->name, "routing");
 		return;
 	}
-
-	/* UPLINK RELOAD|STATUS <server mask>: forward to the matching servers (ENCAP), then do it here if the mask matches us */
-	if (parc >= 3 && (!irccmp(parv[1], "RELOAD") || !irccmp(parv[1], "STATUS")))
+	if (c.mask != NULL)
 	{
-		sendto_match_servs(source_p, parv[2], CAP_ENCAP, NOCAPS, "ENCAP %s UPLINK %s", parv[2], parv[1]);
-		if (match(parv[2], me.name) == 0)
+		cwu_relay(source_p, &c);
+		if (match(c.mask, me.name) == 0)
 			return;
 	}
-
-	if (!irccmp(parv[1], "FREEZE") && parc >= 3)
-	{
-		cwu_frozen = !irccmp(parv[2], "ON");
-		cwu_note("%s by %s", cwu_frozen ? "FROZEN: no link changes" : "unfrozen", get_oper_name(source_p));
-	}
-	else if (!irccmp(parv[1], "RELOAD"))
-	{
-		bool loaded = cwu_load_plan();
-
-		cwu_note("plan reload %s, requested by %s", loaded ? "done" : "FAILED (file not found)", get_oper_name(source_p));
-		sendto_one_notice(source_p, ":UPLINK: plan %s", loaded ? "reloaded" : "file not found");
-	}
-	else if (!irccmp(parv[1], "STATUS"))
-		cwu_status(source_p);
-	else
-		sendto_one_notice(source_p, ":Syntax: UPLINK STATUS [server] | FREEZE ON|OFF | RELOAD [server]");
+	cwu_exec(source_p, &c, false);
 }
