@@ -6,7 +6,15 @@
 #
 # Every uplink you probe is a TCP connection that the peer's connection throttle counts: add
 #   exempt { ip = "<this server's address>"; };
-# on the peers, or the probes can be mistaken for a dead peer.
+# on the peers, or the probes can be mistaken for a dead peer. If the peer runs on the same machine, the address the
+# probes come from is 127.0.0.1: exempt that one too.
+
+# Control from other servers: UPLINK STATUS|RELOAD [server mask], UPLINK FREEZE ON [min] [mask] | FREEZE OFF [mask],
+# UPLINK SET <name,name,..> [min] [mask], UPLINK DEBUG ON [min] [mask] | DEBUG OFF [mask]. They need the oper:routing
+# privilege and are refused here unless the server the oper is connected to is listed in remote_from (default: none, so
+# remote control is off). Remote FREEZE lasts 30 minutes by default and at most 120, SET 120 and at most 240, DEBUG 30 and
+# at most 240; every use is announced to all opers and written to uplink.history, next to this file.
+# remote_from hub.example.net
 
 accept_push no     # yes = ChatWorld's ROUTING PUSH may set the uplink lines below (only services, only names of your own connect{} blocks)
 interval 10        # seconds between ticks and probes
