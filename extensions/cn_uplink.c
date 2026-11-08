@@ -76,6 +76,9 @@ static int cfg_interval = 10, cfg_fail = 3, cfg_ok = 6, cfg_cooldown = 600;
 static int cfg_unstable_drops = 3, cfg_unstable_window = 1800, cfg_unstable_hold = 600;
 static bool cwu_frozen;
 static bool cfg_accept_push;
+#define CWU_REMOTE 8
+static char cwu_remote_from[CWU_REMOTE][64];   /* servers whose opers may run UPLINK RELOAD/STATUS here by ENCAP */
+static int cwu_nremote;
 static char cwu_last_push[160];      /* who/what/when of the last accepted push, for UPLINK STATUS */
 static time_t cwu_connecting_until, cwu_cooldown_until, cwu_fb_deadline, cwu_ready_since, cwu_att_deadline;
 static int cwu_att_idx = -1;   /* uplink we are currently trying to link to when isolated */
@@ -86,11 +89,12 @@ static bool cwu_last_unstable;
 static struct ev_entry *cwu_ev;
 
 static void mo_uplink(struct MsgBuf *, struct Client *, struct Client *, int, const char **);
+static void me_uplink(struct MsgBuf *, struct Client *, struct Client *, int, const char **);
 static void me_uplinkplan(struct MsgBuf *, struct Client *, struct Client *, int, const char **);
 
 struct Message uplink_msgtab = {
 	"UPLINK", 0, 0, 0, 0,
-	{mg_ignore, mg_not_oper, mg_ignore, mg_ignore, mg_ignore, {mo_uplink, 2}}
+	{mg_ignore, mg_not_oper, mg_ignore, mg_ignore, {me_uplink, 2}, {mo_uplink, 2}}
 };
 /* ENCAP <this server> UPLINKPLAN <name,name,...> from services */
 struct Message uplinkplan_msgtab = {
@@ -136,7 +140,7 @@ cwu_note(const char *fmt, ...)
 	va_start(ap, fmt);
 	vsnprintf(buf, sizeof buf, fmt, ap);
 	va_end(ap);
-	sendto_realops_snomask(SNO_GENERAL, L_ALL, "cn_uplink: %s", buf);
+	sendto_realops_snomask(SNO_GENERAL, L_ALL | L_NETWIDE, "cn_uplink: %s", buf);   /* every oper on the network sees who changed what */
 	ilog(L_SERVER, "cn_uplink: %s", buf);
 }
 
@@ -187,6 +191,7 @@ cwu_load_plan(void)
 
 	memset(cwu_ups, 0, sizeof cwu_ups);
 	cfg_accept_push = false;                    /* the file is the truth: no line, no push */
+	cwu_nremote = 0;                            /* same for remote_from: none listed, no remote control */
 	while (fgets(line, sizeof line, f) != NULL)
 	{
 		char key[32], val[64];
@@ -218,6 +223,8 @@ cwu_load_plan(void)
 			cfg_unstable_window = v;
 		else if (!strcmp(key, "unstable_hold") && v >= 0)
 			cfg_unstable_hold = v;
+		else if (!strcmp(key, "remote_from") && cwu_nremote < CWU_REMOTE)
+			rb_strlcpy(cwu_remote_from[cwu_nremote++], val, sizeof cwu_remote_from[0]);
 		else if (!strcmp(key, "accept_push"))
 			cfg_accept_push = !strcmp(val, "yes") || !strcmp(val, "1") || !strcmp(val, "on");
 	}
@@ -606,7 +613,7 @@ me_uplinkplan(struct MsgBuf *msgbuf_p, struct Client *client_p, struct Client *s
 
 	if (!cfg_accept_push)
 	{
-		sendto_realops_snomask(SNO_GENERAL, L_ALL, "cn_uplink: plan from %s ignored (accept_push is off here)", source_p->name);
+		cwu_note("plan from %s ignored (accept_push is off here)", source_p->name);
 		return;
 	}
 
@@ -655,16 +662,74 @@ refused:
 }
 
 static void
-mo_uplink(struct MsgBuf *msgbuf_p, struct Client *client_p, struct Client *source_p, int parc, const char *parv[])
+cwu_status(struct Client *source_p)
 {
 	time_t now = rb_current_time();
 	int i;
 
+	sendto_one_notice(source_p, ":UPLINK%s: interval %d fail %d ok %d cooldown %d s, accept_push %s%s%s",
+	                  cwu_frozen ? " (FROZEN)" : "", cfg_interval, cfg_fail, cfg_ok, cfg_cooldown,
+	                  cfg_accept_push ? "yes" : "no", cwu_last_push[0] ? ", last plan from " : "", cwu_last_push);
+	for (i = 0; i < cwu_n; i++)
+	{
+		const struct cwu_up *u = &cwu_ups[i];
+
+		sendto_one_notice(source_p, ":UPLINK %d %s: %s%s fails=%d oks=%d drops=%d%s", i, u->name,
+		                  u->linked ? "LINKED" : (u->down ? "down" : "up?"), i == 0 ? " (preferred)" : "",
+		                  u->fails, u->oks, cwu_recent_drops(u, now),
+		                  cwu_unstable(u, now) ? " UNSTABLE" : "");
+	}
+}
+
+/* RELOAD from a remote oper: the origin server checked oper:routing; here we trust only the servers the local plan
+ * lists in remote_from (default: none). Always announced to every oper, with who and from where. */
+static void
+me_uplink(struct MsgBuf *msgbuf_p, struct Client *client_p, struct Client *source_p, int parc, const char *parv[])
+{
+	bool ok = false;
+	int i;
+
+	if (!IsPerson(source_p) || !IsOper(source_p) || source_p->servptr == NULL)
+		return;
+	for (i = 0; i < cwu_nremote; i++)
+		if (!irccmp(cwu_remote_from[i], source_p->servptr->name))
+			ok = true;
+	if (!ok)
+	{
+		cwu_note("remote UPLINK %s by %s refused: %s is not in remote_from here", parv[1], source_p->name, source_p->servptr->name);
+		sendto_one_notice(source_p, ":UPLINK: %s refuses remote control from %s (not in remote_from)", me.name, source_p->servptr->name);
+		return;
+	}
+	if (!irccmp(parv[1], "RELOAD"))
+	{
+		bool loaded = cwu_load_plan();
+
+		cwu_note("plan reload %s, requested by %s from %s", loaded ? "done" : "FAILED (file not found)", source_p->name, source_p->servptr->name);
+		sendto_one_notice(source_p, ":UPLINK: %s plan %s", me.name, loaded ? "reloaded" : "file not found");
+	}
+	else if (!irccmp(parv[1], "STATUS"))
+	{
+		sendto_one_notice(source_p, ":UPLINK: status of %s", me.name);
+		cwu_status(source_p);
+	}
+}
+
+static void
+mo_uplink(struct MsgBuf *msgbuf_p, struct Client *client_p, struct Client *source_p, int parc, const char *parv[])
+{
 	/* STATUS is for any oper; FREEZE and RELOAD change what the server does with its links. */
 	if ((!irccmp(parv[1], "FREEZE") || !irccmp(parv[1], "RELOAD")) && !HasPrivilege(source_p, "oper:routing"))
 	{
 		sendto_one(source_p, form_str(ERR_NOPRIVS), me.name, source_p->name, "routing");
 		return;
+	}
+
+	/* UPLINK RELOAD|STATUS <server mask>: forward to the matching servers (ENCAP), then do it here if the mask matches us */
+	if (parc >= 3 && (!irccmp(parv[1], "RELOAD") || !irccmp(parv[1], "STATUS")))
+	{
+		sendto_match_servs(source_p, parv[2], CAP_ENCAP, NOCAPS, "ENCAP %s UPLINK %s", parv[2], parv[1]);
+		if (match(parv[2], me.name) == 0)
+			return;
 	}
 
 	if (!irccmp(parv[1], "FREEZE") && parc >= 3)
@@ -674,23 +739,13 @@ mo_uplink(struct MsgBuf *msgbuf_p, struct Client *client_p, struct Client *sourc
 	}
 	else if (!irccmp(parv[1], "RELOAD"))
 	{
-		sendto_one_notice(source_p, ":UPLINK: plan %s", cwu_load_plan() ? "reloaded" : "file not found");
+		bool loaded = cwu_load_plan();
+
+		cwu_note("plan reload %s, requested by %s", loaded ? "done" : "FAILED (file not found)", get_oper_name(source_p));
+		sendto_one_notice(source_p, ":UPLINK: plan %s", loaded ? "reloaded" : "file not found");
 	}
 	else if (!irccmp(parv[1], "STATUS"))
-	{
-		sendto_one_notice(source_p, ":UPLINK%s: interval %d fail %d ok %d cooldown %d s, accept_push %s%s%s",
-		                  cwu_frozen ? " (FROZEN)" : "", cfg_interval, cfg_fail, cfg_ok, cfg_cooldown,
-		                  cfg_accept_push ? "yes" : "no", cwu_last_push[0] ? ", last plan from " : "", cwu_last_push);
-		for (i = 0; i < cwu_n; i++)
-		{
-			const struct cwu_up *u = &cwu_ups[i];
-
-			sendto_one_notice(source_p, ":UPLINK %d %s: %s%s fails=%d oks=%d drops=%d%s", i, u->name,
-			                  u->linked ? "LINKED" : (u->down ? "down" : "up?"), i == 0 ? " (preferred)" : "",
-			                  u->fails, u->oks, cwu_recent_drops(u, now),
-			                  cwu_unstable(u, now) ? " UNSTABLE" : "");
-		}
-	}
+		cwu_status(source_p);
 	else
-		sendto_one_notice(source_p, ":Syntax: UPLINK STATUS | FREEZE ON|OFF | RELOAD");
+		sendto_one_notice(source_p, ":Syntax: UPLINK STATUS [server] | FREEZE ON|OFF | RELOAD [server]");
 }
