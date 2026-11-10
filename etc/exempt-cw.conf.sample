@@ -1,0 +1,3 @@
+/* exempt-cw.conf -- written by the cn_clone_except extension (per-host connection limit exceptions that ChatNet's
+ * services push to every server). Copy this file to "exempt-cw.conf" next to ircd.conf BEFORE the first start, so the
+ * .include in ircd.conf finds it. The server rewrites it by itself from then on: do not edit it by hand. */
