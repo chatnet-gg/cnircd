@@ -92,6 +92,9 @@ Not part of upstream, loaded by the bundled config:
 - `cap_sts.c` -- IRCv3 STS, advertises the real TLS port.
 - `cn_ip_cloak.c` -- the `CN-` anonymous IP/host cloak (`+x`).
 - `cn_whois_notify.c` -- notifies on WHOIS (`+W`), staff and bots excluded.
+- `cn_uplink.c` -- preferred uplink, failover and failback.
+- `cn_clone_except.c` -- per-host connection limit exceptions from services.
+- `cn_chanrename.c` -- RENAME: change the capitalisation of a channel name.
 
 `extb_account`, `sno_globaloper`, `invite_notify` and `chm_operonly`
 are stock Solanum extensions that every ChatNet server loads.
@@ -101,7 +104,7 @@ message -- `git log` for the details, this file is just the index.
 
 ## Building
 
-Same as upstream Solanum -- see `INSTALL.md`. If you're containerizing
+Step by step for a new ChatNet server: see `docs/LEAF-SETUP.md`. If you're containerizing
 it, watch Docker's default `nofile` ulimit: it's often high enough
 that Solanum's fd-indexed table sizing tries to allocate a huge amount
 of memory and segfaults at startup. Cap it explicitly (ChatNet uses
