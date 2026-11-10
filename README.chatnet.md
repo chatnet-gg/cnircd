@@ -68,7 +68,8 @@ code doesn't link you to anything, the hub has to accept you first.
 
 ## The sample config
 
-`etc/ircd.conf.sample` is the leaf template. Fill in the `<<-- ... -->>`
+`etc/ircd.conf.sample` is the leaf template (copy `etc/exempt-cw.conf.sample` to `exempt-cw.conf` next to it
+first: the template `.include`s that file). Fill in the `<<-- ... -->>`
 placeholders (server name, SID, link password, hub address, the routing
 O-line hashes you're given) and it loads as is. It already carries the
 things that have to match the rest of the network:

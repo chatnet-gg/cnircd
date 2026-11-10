@@ -56,6 +56,20 @@ loadmodule "extensions/cn_ip_cloak";
  * $a ban set elsewhere wouldn't be enforced on your server. */
 loadmodule "extensions/extb_account";
 
+/* Per-host connection-limit exceptions pushed by ChatNet's services
+ * (K9), so a shared IP (school, company, CGNAT) is not refused by the
+ * per-host limit. Every ChatNet server carries it. */
+loadmodule "extensions/cn_clone_except";
+
+/* Preferred uplink / failover / failback. Idle until you put an
+ * uplink.plan next to ircd.conf (see etc/uplink.plan.sample): without
+ * a plan it does nothing, so it is safe to load as is. */
+loadmodule "extensions/cn_uplink";
+
+/* RENAME: change the capitalisation of a channel name while it is in
+ * use (case-only), with the channel's members and state untouched. */
+loadmodule "extensions/cn_chanrename";
+
 /* Server-notice mask for global-oper notices (+s snomask), same on
  * every ChatNet server. */
 loadmodule "extensions/sno_globaloper";
@@ -128,7 +142,7 @@ class "server" {
 dnsbl {
 	host = "rbl.efnetrbl.org";
 	type = ipv4;
-	reject_reason = "Your IP is listed in EFnet's RBL as an open proxy or compromised host. If this is a mistake, see http://efnetrbl.org/ or contact the ChatNet admin.";
+	reject_reason = "Your IP is listed in EFnet's RBL as an open proxy or compromised host. If this is a mistake, see http://efnetrbl.org/ or contact abcx@chatnet.gg.";
 };
 
 /* Spamhaus ZEN -- catches spam sources EFnet's RBL alone misses.
@@ -139,7 +153,7 @@ dnsbl {
 	host = "zen.spamhaus.org";
 	type = ipv4;
 	matches = "2", "3", "4", "5", "6", "7";
-	reject_reason = "Your IP is listed in Spamhaus ZEN as a known spam source or compromised host. If this is a mistake, see https://www.spamhaus.org/lookup/ or contact the ChatNet admin.";
+	reject_reason = "Your IP is listed in Spamhaus ZEN as a known spam source or compromised host. If this is a mistake, see https://www.spamhaus.org/lookup/ or contact abcx@chatnet.gg.";
 };
 
 /* Only needed if you want real users connecting directly to YOUR
@@ -152,6 +166,11 @@ listen {
 	port = 6667;
 	sslport = 6697;
 };
+
+/* Per-host connection limit exceptions, written by the cn_clone_except
+ * module. This MUST come before the first auth{} block (earlier = higher
+ * precedence). Create the file first:  cp exempt-cw.conf.sample exempt-cw.conf */
+.include "exempt-cw.conf"
 
 auth {
 	user = "*@*";
@@ -306,7 +325,7 @@ privset "cerberus" {
 };
 
 privset "cncheck" {
-	privs = oper:general, oper:rehash;
+	privs = oper:general, oper:rehash, oper:wallops;
 };
 
 privset "realhostbot" {
