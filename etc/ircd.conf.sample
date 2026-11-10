@@ -5,6 +5,11 @@
  * (the SID/host/password you were given by the ChatNet admin, plus
  * your own local server details) and nothing else needs to change.
  *
+ * This file holds ONLY what is local to your server. Everything that must be identical on every ChatNet server
+ * (modules, privsets, aliases, services, channel and general settings, DNSBLs) lives in chatnet-common.conf and
+ * chatnet-clients.conf, which are included below: copy those two files next to this one and do not edit them, so a
+ * later `git pull` of the standard reaches you without a merge.
+ *
  * See https://chatnet.gg/routing.html for the full step-by-step guide.
  *
  * Based on Solanum's own example config, adapted for ChatNet and
@@ -20,59 +25,14 @@
  * Questions about linking: ChatNet Routing, via the page above.
  */
 
-/* IRCv3 STS (Strict Transport Security) capability -- tells clients to
- * remember and prefer the real TLS port (6697 below) instead of
- * reconnecting in plaintext. Not a stock solanum module -- see
- * extensions/cap_sts.c. */
-loadmodule "extensions/cap_sts";
+/* The ChatNet standard -- identical on every server. Do not edit these two files. */
+.include "chatnet-common.conf"
+.include "chatnet-clients.conf"
 
-/* IRCv3 invite-notify -- stock solanum extension, already compiled by
- * default, just never loaded by default. echo-message needs no such
- * line -- it's core, not an extension, always-on. */
-loadmodule "extensions/invite_notify";
-
-/* Channel mode +O -- makes a channel oper-only: anyone who isn't an
- * IRC operator gets rejected on JOIN with numeric 520. Stock solanum
- * extension, only an oper can set/unset +O itself. */
-loadmodule "extensions/chm_operonly";
-
-/* Umode +W: notifies you when someone /WHOIS's you. Opt-in per user
- * via /mode +W (auto-enabled for opers on /oper), not part of
- * default_umodes. Excludes ChatNet's own service/bot nicks and
- * staff-on-staff WHOIS (both sides checked via the "chatnet/staff/"
- * cloak prefix) -- see extensions/cn_whois_notify.c for the full
- * reasoning. Every ChatNet server carries this. */
-loadmodule "extensions/cn_whois_notify";
-
-/* Per-user anonymous IP/host cloak, "CN-" branded (see
- * extensions/cn_ip_cloak.c) -- enabled by default for everyone via
- * default_umodes below ("+ix"). Registered+identified NickServ
- * accounts get their own "user/<account>" cloak instead, overwritten
- * on IDENTIFY/SASL regardless of this module. */
-loadmodule "extensions/cn_ip_cloak";
-
-/* Account extban ($a / $a:<account>) -- channel bans and exemptions on
- * a NickServ account. Every ChatNet server carries it, otherwise a
- * $a ban set elsewhere wouldn't be enforced on your server. */
-loadmodule "extensions/extb_account";
-
-/* Per-host connection-limit exceptions pushed by ChatNet's services
- * (K9), so a shared IP (school, company, CGNAT) is not refused by the
- * per-host limit. Every ChatNet server carries it. */
-loadmodule "extensions/cn_clone_except";
-
-/* Preferred uplink / failover / failback. Idle until you put an
- * uplink.plan next to ircd.conf (see etc/uplink.plan.sample): without
- * a plan it does nothing, so it is safe to load as is. */
-loadmodule "extensions/cn_uplink";
-
-/* RENAME: change the capitalisation of a channel name while it is in
- * use (case-only), with the channel's members and state untouched. */
-loadmodule "extensions/cn_chanrename";
-
-/* Server-notice mask for global-oper notices (+s snomask), same on
- * every ChatNet server. */
-loadmodule "extensions/sno_globaloper";
+modules {
+	path = "modules";
+	path = "modules/autoload";
+};
 
 serverinfo {
 	name = "<<-- your-assigned-name.chatnet.gg -->>";
@@ -135,27 +95,6 @@ class "server" {
 	sendq = 4 megabytes;
 };
 
-/* Every server in the network runs these -- check connecting users
- * against public DNSBLs of known open proxies/compromised hosts.
- * Only relevant if your server accepts real users directly (see the
- * listen{} block below); omit if it doesn't. */
-dnsbl {
-	host = "rbl.efnetrbl.org";
-	type = ipv4;
-	reject_reason = "Your IP is listed in EFnet's RBL as an open proxy or compromised host. If this is a mistake, see http://efnetrbl.org/ or contact abcx@chatnet.gg.";
-};
-
-/* Spamhaus ZEN -- catches spam sources EFnet's RBL alone misses.
- * matches excludes PBL (10, 11): that zone just flags dynamic/
- * residential IP ranges, not actual abuse, and would false-positive
- * on plenty of real users' home connections. */
-dnsbl {
-	host = "zen.spamhaus.org";
-	type = ipv4;
-	matches = "2", "3", "4", "5", "6", "7";
-	reject_reason = "Your IP is listed in Spamhaus ZEN as a known spam source or compromised host. If this is a mistake, see https://www.spamhaus.org/lookup/ or contact abcx@chatnet.gg.";
-};
-
 /* Only needed if you want real users connecting directly to YOUR
  * server. Omit entirely if this leaf only exists to extend the
  * network topology, with no local users. sslport requires
@@ -193,35 +132,6 @@ connect "irc.chatnet.gg" {
 	class = "server";
 	flags = autoconn;
 };
-
-/* Marks ChatNet's own services (K9/NickServ/etc) as a trusted network
- * service on YOUR server too. Every server in the network must
- * declare this identically. */
-service {
-	name = "services.chatnet.gg";
-};
-
-/* Same short command aliases as the rest of the network. No "ChanServ"
- * or "OperServ" alias, deliberately -- the real nicks are "K9" and "OS".
- * The nick service's real nick is "DogTag"; "NickServ" and "NS" stay as
- * aliases so /NickServ and /NS keep working for everyone. */
-alias "NickServ" { target = "DogTag"; };
-alias "MemoServ" { target = "MemoServ"; };
-alias "GroupServ" { target = "GroupServ"; };
-alias "HostServ" { target = "HostServ"; };
-alias "BotServ" { target = "BotServ"; };
-alias "InfoServ" { target = "InfoServ"; };
-alias "NS" { target = "DogTag"; };
-alias "DogTag" { target = "DogTag"; };
-alias "CS" { target = "K9"; };
-alias "K9" { target = "K9"; };
-alias "OS" { target = "OS"; };
-alias "MS" { target = "MemoServ"; };
-alias "GS" { target = "GroupServ"; };
-alias "HS" { target = "HostServ"; };
-alias "BS" { target = "BotServ"; };
-alias "ChatWorld" { target = "ChatWorld"; };
-alias "CW" { target = "ChatWorld"; };
 
 /* Every ChatNet service nick (NickServ/K9/OS/ChatWorld/etc) is under a
  * permanent, network-wide RESV -- it's set once on any linked server and
@@ -286,149 +196,4 @@ operator "<<-- your local oper name -->>" {
 	user = "*@*";
 	password = "<<-- choose your own password -->>";
 	flags = ~encrypted;
-};
-
-privset "admin" {
-	privs = oper:general, oper:privs, oper:testline, oper:kill, oper:operwall, oper:message,
-		usermode:servnotice, auspex:oper, auspex:hostname, auspex:umodes, auspex:cmodes,
-		oper:routing, oper:kline, oper:unkline, oper:xline, oper:resv, oper:cmodes,
-		oper:mass_notice, oper:wallops, oper:remoteban, oper:admin, oper:die, oper:rehash,
-		oper:spy, oper:grant;
-};
-
-/* The privsets below are used by ChatNet's O-lines and service bots
- * network-wide, and are agreed on by every server admin on ChatNet. A
- * server propagates the oper's privset NAME, so every
- * server must define all of them identically -- a missing one makes
- * that oper show up with no privileges and logs "Received OPER for X
- * with unknown privset Y". Keep them exactly as given. */
-privset "global" {
-	privs = oper:general, oper:kill, oper:kline, oper:unkline, oper:xline, oper:resv,
-		usermode:servnotice, oper:testline, oper:operwall, oper:message,
-		auspex:oper, auspex:hostname, auspex:umodes, auspex:cmodes, oper:spy,
-		oper:routing, oper:remoteban, oper:mass_notice, oper:wallops, oper:cmodes;
-};
-
-privset "local" {
-	privs = oper:general, oper:kill, oper:kline, oper:unkline, oper:xline, oper:resv,
-		usermode:servnotice, oper:testline, oper:operwall, oper:message,
-		auspex:oper, auspex:hostname;
-};
-
-privset "abuse-bot" {
-	privs = oper:general, oper:kill, oper:kline, oper:unkline, oper:remoteban,
-		usermode:servnotice, auspex:hostname;
-};
-
-privset "cerberus" {
-	privs = oper:general, usermode:servnotice;
-};
-
-privset "cncheck" {
-	privs = oper:general, oper:rehash, oper:wallops;
-};
-
-privset "realhostbot" {
-	privs = oper:general, auspex:hostname;
-};
-
-privset "bopm" {
-	privs = oper:general, oper:kill, oper:kline, oper:unkline, usermode:servnotice, auspex:oper;
-};
-
-/* Copied verbatim from the network -- keep these identical so
- * channel/nick behavior feels consistent regardless of which server
- * a user happens to be connected to. */
-channel {
-	use_invex = yes;
-	use_except = yes;
-	use_forward = yes;
-	use_knock = yes;
-	knock_delay = 5 minutes;
-	knock_delay_channel = 1 minute;
-	max_chans_per_user = 15;
-	max_bans = 100;
-	default_split_user_count = 0;
-	default_split_server_count = 0;
-	no_create_on_split = no;
-	no_join_on_split = no;
-	burst_topicwho = yes;
-	autochanmodes = "+nt";
-};
-
-serverhide {
-	flatten_links = yes;
-	links_delay = 5 minutes;
-	hidden = yes;
-	disable_hidden = no;
-};
-
-general {
-	hide_error_messages = opers;
-	hide_spoof_ips = no;
-	default_umodes = "+ix";
-	default_operstring = "is an IRC Operator";
-	default_adminstring = "is a Server Administrator";
-	servicestring = "is a Network Service";
-	sasl_service = "SaslServ";
-	disable_fake_channels = no;
-	tkline_expire_notices = no;
-	default_floodcount = 10;
-	failed_oper_notice = yes;
-	dots_in_ident = 2;
-	min_nonwildcard = 4;
-	min_nonwildcard_simple = 3;
-	max_accept = 100;
-	max_monitor = 100;
-	anti_nick_flood = yes;
-	max_nick_time = 20 seconds;
-	max_nick_changes = 5;
-	anti_spam_exit_message_time = 5 minutes;
-	ts_warn_delta = 30 seconds;
-	ts_max_delta = 5 minutes;
-	client_exit = yes;
-	collision_fnc = yes;
-	resv_fnc = yes;
-	global_snotices = yes;
-	dline_with_reason = yes;
-	kline_with_reason = yes;
-	kline_reason = "K-Lined";
-	identify_service = "DogTag@services.chatnet.gg";
-	identify_command = "IDENTIFY";
-	non_redundant_klines = yes;
-	warn_no_nline = yes;
-	use_propagated_bans = yes;
-	stats_o_oper_only = yes;
-	stats_i_oper_only = masked;
-	stats_k_oper_only = masked;
-	map_oper_only = yes;
-	caller_id_wait = 1 minute;
-	pace_wait_simple = 1 second;
-	pace_wait = 10 seconds;
-	short_motd = no;
-	ping_cookie = no;
-	connect_timeout = 30 seconds;
-	default_ident_timeout = 5;
-	disable_auth = no;
-	no_oper_flood = yes;
-	max_targets = 4;
-	client_flood_max_lines = 20;
-	oper_only_umodes = operwall, servnotice;
-	oper_umodes = servnotice, operwall, wallop;
-	oper_snomask = "+s";
-	burst_away = yes;
-	nick_delay = 0 seconds;
-	reject_ban_time = 1 minute;
-	reject_after_count = 3;
-	reject_duration = 5 minutes;
-	throttle_duration = 60;
-	throttle_count = 4;
-	max_ratelimit_tokens = 30;
-	away_interval = 30;
-	hide_opers_in_whois = no;
-};
-
-modules {
-	path = "modules";
-	path = "modules/autoload";
 };
