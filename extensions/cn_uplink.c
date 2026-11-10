@@ -23,8 +23,10 @@
  *  - Not linked to any planned uplink: connect to the first one that is not down (an unstable uplink is skipped
  *    until it has been clean for unstable_hold seconds).
  *  - Linked to a fallback while a better uplink answers `ok` probes in a row: close the link to the fallback and connect
- *    to the better one at once (a tree allows one uplink, so it is break-then-make). If the new link is not up
- *    25 seconds later, go back to the fallback and wait `cooldown` seconds.
+ *    to the better one (a tree allows one uplink, so it is break-then-make). The connect starts one tick after the
+ *    split, so the better uplink has seen it and does not refuse a duplicate server or count a burst of connects
+ *    against its connection throttle; if it is not up 20 seconds later it is tried once more. If the move has not
+ *    completed 60 seconds after the split, go back to the fallback and wait `cooldown` seconds.
  *  - Probes are plain TCP connects to the uplink's port, only toward uplinks we are NOT linked to and that are
  *    better than the one we are on (all of them when isolated). The peer's connection throttle counts them: the
  *    peer needs an exempt{} for this server's address.
@@ -94,6 +96,8 @@ static time_t cwu_connecting_until, cwu_cooldown_until, cwu_fb_deadline, cwu_rea
 static int cwu_att_idx = -1;   /* uplink we are currently trying to link to when isolated */
 static int cwu_att_oks;        /* its good-probe count when the attempt started: >0 means it looked reachable */
 static int cwu_fb_target = -1, cwu_fb_rollback = -1;
+static bool cwu_fb_pending;     /* the old link is gone: the connect to the better uplink starts at the next tick */
+static int cwu_fb_tries;       /* connects made to the better uplink in this move (it gets one retry) */
 static int cwu_last_state = -2;      /* -1 isolated, 0 preferred, k fallback k */
 static bool cwu_last_unstable;
 static struct ev_entry *cwu_ev;
@@ -302,6 +306,7 @@ cwu_load_plan(bool keep, bool may_generate)
 	memset(cwu_ups, 0, sizeof cwu_ups);
 	cwu_override_until = 0;                     /* reading the file ends any temporary plan */
 	cwu_att_idx = cwu_fb_target = cwu_fb_rollback = -1;
+	cwu_fb_pending = false;
 	cfg_accept_push = false;                    /* the file is the truth: no line, no push */
 	cwu_nremote = 0;                            /* same for remote_from: none listed, no remote control */
 	while (fgets(line, sizeof line, f) != NULL)
@@ -641,6 +646,23 @@ cwu_tick(void *unused)
 	{
 		if (cwu_ups[cwu_fb_target].linked)
 			cwu_fb_target = -1;                  /* move completed */
+		else if (cwu_fb_pending)
+		{
+			/* Break-then-make with a pause: the better uplink may still see this server in its tree for a moment
+			 * after the old link dropped and then closes the handshake (a duplicate server), so the connect starts
+			 * one tick after the split. */
+			cwu_fb_pending = false;
+			cwu_fb_tries = 1;
+			cwu_connect(cwu_fb_target);
+			cwu_fb_deadline = now + 20;
+		}
+		else if (now >= cwu_fb_deadline && cwu_fb_tries <= 1)
+		{
+			cwu_note("attempt to link to %s did not come up, trying once more", cwu_ups[cwu_fb_target].name);
+			cwu_fb_tries++;
+			cwu_connect(cwu_fb_target);
+			cwu_fb_deadline = now + 20;
+		}
 		else if (now >= cwu_fb_deadline)
 		{
 			cwu_note("move back to %s failed, returning to %s, next try in %d s", cwu_ups[cwu_fb_target].name,
@@ -721,11 +743,12 @@ cwu_tick(void *unused)
 		         cwu_ups[li].name, cwu_ups[j].name);
 		cwu_fb_target = j;
 		cwu_fb_rollback = li;
-		cwu_fb_deadline = now + 25;
+		cwu_fb_pending = true;
+		cwu_fb_tries = 0;
+		cwu_fb_deadline = now + 60;
 		cwu_ready_since = 0;
 		if (old != NULL)
 			exit_client(old, old, &me, "uplink change");
-		cwu_connect(j);
 	}
 }
 
@@ -1057,6 +1080,7 @@ cwu_exec(struct Client *source_p, const struct cwu_cmd *c, bool remote)
 			rb_strlcpy(cwu_ups[i].name, names[i], sizeof cwu_ups[0].name);
 		cwu_n = count;
 		cwu_att_idx = cwu_fb_target = cwu_fb_rollback = -1;
+		cwu_fb_pending = false;
 		cwu_override_until = now + m * 60;
 		cwu_plan_str(shown, sizeof shown);
 		cwu_note("TEMPORARY plan set by %s for %d min: %s (then back to the plan file)", who, m, shown);
